@@ -1,0 +1,150 @@
+// API userland: wrappers de syscalls y utilitarios minimos.
+// sys_read es NO bloqueante en nivel bajo; getchar() bloquea.
+// Redraw buffer registra salida para re-render al cambiar tamaño de fuente.
+#ifndef USERLIB_H
+#define USERLIB_H
+
+#include <stdint.h>
+#include <memoryManager/memoryManager.h>
+
+/* Sub-headers de los modulos de c/lib/: userlib.h actua como fachada y los
+** agrega para que los consumidores que incluyen userlib.h sigan viendo la API. */
+#include "lib/strings.h"
+#include "lib/io.h"
+#include "lib/format.h"
+#include "lib/redraw.h"
+/* Prototipos de los builtins de la shell (help/clear/ps) y de los comandos-proceso.
+** Centralizados en commands.h; la fachada los reexporta por compatibilidad. */
+#include "commands/commands.h"
+
+#define STDOUT 1
+#define STDERR 2
+#define REGSBUFF 500
+#define KB 1024
+#define BM_BUFF 20
+#define NOTE_C4  262
+#define NOTE_CS4 277
+#define NOTE_D4  294
+#define NOTE_DS4 311
+#define NOTE_E4  330
+#define NOTE_F4  349
+#define NOTE_FS4 370
+#define NOTE_G4  392
+#define NOTE_GS4 415
+#define NOTE_A4  440
+#define NOTE_AS4 466
+#define NOTE_B4  494
+#define NOTE_C5  523
+#define NOTE_CS5 554
+#define NOTE_D5  587
+#define NOTE_DS5 622
+#define NOTE_E5  659
+#define NOTE_F5  698
+#define EIGHTH 50
+#define QUARTER 100
+#define HALF 200
+
+#define MAX_PROCESSES 64
+#define MAX_NAME_LEN  32
+
+/* sys_read devuelve este valor cuando el proceso se bloqueo esperando teclado:
+** userland debe reintentar la lectura. Debe coincidir con SYS_READ_RETRY del
+** kernel (syscallDispatcher.c). Distinto de 0 (EOF) y de -1 (error). */
+#define READ_RETRY ((uint64_t)-2)
+
+// Vista userland de un proceso (misma que kernel ProcessInfo)
+typedef struct {
+    uint64_t pid;
+    char     name[MAX_NAME_LEN];
+    uint8_t  priority;
+    uint8_t  state;
+    uint8_t  foreground;
+    uint64_t rsp;
+    uint64_t rbp;
+} ProcessInfo;
+
+// ─── Syscalls de IO ───────────────────────────────────────────────────────────
+uint64_t sys_write(uint64_t fd, const char * buff, uint64_t count);
+uint64_t sys_write_color(uint64_t fd, const char * buff, uint64_t count, uint32_t color);
+uint64_t sys_read(char * buff, uint64_t count);
+uint64_t sys_registers(char * buff);
+void sys_time(uint8_t * buff);
+void sys_date(uint8_t * buff);
+void sys_increase_fontsize(void);
+void sys_decrease_fontsize(void);
+void sys_beep(uint32_t freq, uint64_t time);
+uint64_t sys_ticks(void);
+void sys_clear(void);
+void sys_speaker_start(uint32_t freq);
+void sys_speaker_off(void);
+uint64_t sys_screen_width(void);
+uint64_t sys_screen_height(void);
+/* Filas/columnas de texto que caben en pantalla con el tamaño de fuente actual.
+** La shell las usa para paginar contando filas fisicas (las lineas largas que no
+** entran en el ancho hacen wrap y ocupan mas de una fila). */
+uint64_t sys_console_rows(void);
+uint64_t sys_console_cols(void);
+void sys_putpixel(uint32_t color, uint64_t x, uint64_t y);
+void sys_fill_rect(uint64_t x, uint64_t y, uint64_t w, uint64_t h, uint32_t color);
+/* Muestra (1) u oculta (0) el cursor parpadeante de la consola; lo dibuja y
+** parpadea el kernel, y toda escritura a pantalla lo desplaza por delante. */
+void sys_set_cursor(uint64_t on);
+
+// ─── Syscalls de memoria ──────────────────────────────────────────────────────
+void *sys_malloc(uint64_t size);
+void sys_free(void *ptr);
+void sys_mem_status(MemStatus *status);
+
+// ─── Syscalls de procesos ─────────────────────────────────────────────────────
+int64_t  sys_create_process(const char *name, void *entry,
+                            int argc, char **argv, uint8_t fg);
+void     sys_exit(int retval);
+uint64_t sys_getpid(void);
+uint64_t sys_ps(ProcessInfo *buffer, uint64_t max_count);
+void     sys_kill(uint64_t pid);
+void     sys_nice(uint64_t pid, uint64_t new_priority);
+void     sys_block(uint64_t pid);
+void     sys_unblock(uint64_t pid);
+void     sys_yield(void);
+int64_t  sys_waitpid(uint64_t pid);
+int64_t  sys_sem_open(const char *name, uint64_t initial_value);
+int64_t  sys_sem_wait(const char *name);
+int64_t  sys_sem_post(const char *name);
+int64_t  sys_sem_close(const char *name);
+
+// ─── Syscalls de pipes ────────────────────────────────────────────────────────
+int64_t  sys_pipe(int fds[2]);
+int64_t  sys_pipe_close(int fd);
+int64_t  sys_pipe_open(const char *name, int fds[2]);
+/* fg_fdin_fdout: bits[0:7]=fg, bits[16:31]=fd_in, bits[32:47]=fd_out */
+int64_t  sys_create_process_fd(const char *name, void *entry,
+                               int argc, char **argv,
+                               uint64_t fg_fdin_fdout);
+
+// ─── Utilitarios ─────────────────────────────────────────────────────────────
+// putchar/getchar/read_full/next_uint → lib/io.h; num_to_str → lib/format.h.
+void processLine(char * buff, uint32_t * history_len);
+void gen_invalid_opcode(void);
+
+// ─── Argumentos del comando actual ────────────────────────────────────────────
+// Devuelve el resto de la linea (despues del primer espacio) o NULL si no hay
+// argumentos. Lo setea processLine antes de invocar al comando. Usado por
+// test_proc y test_prio.
+const char *cmd_args(void);
+
+// ─── Comandos heredados de x64BareBones (no registrados en commands[]) ─────────
+// Se conservan como referencia; help/clear/ps viven ahora en commands/commands.h.
+void registers(void);
+void divideByZero(void);
+void printTime(void);
+void printDate(void);
+void playBeep(void);
+void invOp(void);
+uint8_t adjustHour(uint8_t hour, int offset);
+void printTimeAndDate(uint8_t* buff, char separator);
+void bmMEM(void);
+void bmCPU(void);
+void bmFPS(void);
+void bmKEY(void);
+
+#endif

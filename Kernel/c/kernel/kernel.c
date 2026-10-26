@@ -1,0 +1,90 @@
+#include <stdint.h>
+#include "lib/lib.h"
+#include "kernel/moduleLoader.h"
+#include "interrupts/idtLoader.h"
+#include "kernel/kernelApi.h"
+#include "memoryManager/memoryManager.h"
+#include "process/process.h"
+#include "process/scheduler.h"
+#include "interrupts/interrupts.h"
+#include "ipc/semaphore.h"
+#include "ipc/pipe.h"
+
+#define HEAP_START  0x600000
+#define HEAP_SIZE   (8 * 1024 * 1024)  // 8 MB
+
+extern uint8_t text;
+extern uint8_t rodata;
+extern uint8_t data;
+extern uint8_t bss;
+extern uint8_t endOfKernelBinary;
+extern uint8_t endOfKernel;
+static const uint64_t PageSize = 0x1000;
+static void * const sampleCodeModuleAddress = (void*)0x400000;
+static void * const sampleDataModuleAddress = (void*)0x500000;
+
+// Proceso idle: ejecuta hlt en loop. Siempre READY, nunca se bloquea.
+static void idle_entry(int argc, char **argv) {
+    (void)argc; (void)argv;
+    while (1)
+        _hlt();
+}
+
+// Punto de entrada del kernel: arranca el scheduler (nunca retorna)
+int main(void){
+    /* Si scheduler_start retorna quedar en loop. */ 
+    scheduler_start();  
+    while(1){
+        _hlt();
+    }
+    
+    return 0;
+}
+
+void clearBSS(void * bssAddress, uint64_t bssSize){
+    memset(bssAddress, 0, bssSize);
+}
+
+void * getStackBase(void){
+    return (void*)(
+        (uint64_t)&endOfKernel
+        + PageSize * 8
+        - sizeof(uint64_t)
+    );
+}
+
+// Carga modulos, inicializa subsistemas y crea los procesos iniciales
+void * initializeKernelBinary(void){
+    void * moduleAddresses[] = {sampleCodeModuleAddress, sampleDataModuleAddress};
+
+    // Interrupciones deshabilitadas durante toda la inicializacion del kernel.
+    // Se rehabilitan solas cuando el scheduler lanza el primer proceso (iretq con IF=1).
+    _cli();
+
+    loadModules(&endOfKernelBinary, moduleAddresses);
+    clearBSS(&bss, &endOfKernel - &bss);
+    load_idt();
+
+    mm_init((void *)HEAP_START, HEAP_SIZE);
+
+    process_init();
+    scheduler_init();
+    sem_init();
+    pipe_init();
+
+    // Crear proceso idle primero (siempre en la posicion 0 de la cola).
+    // Se le baja la prioridad al minimo y se registra como idle para que el
+    // scheduler lo elija solo cuando no hay ningun otro proceso READY.
+    int idle_pid = process_create("idle", idle_entry, 0, NULL, 0);
+    PCB *idle = process_get((uint64_t)idle_pid);
+    if(idle != NULL){
+        idle->priority = MIN_PRIORITY;
+        idle->remaining_quanta = MIN_PRIORITY;
+        scheduler_set_idle(idle);
+    }
+
+    // Crear la shell como proceso foreground
+    process_create("shell", (ProcessEntry)sampleCodeModuleAddress, 0, NULL, 1);
+
+    return getStackBase();
+}

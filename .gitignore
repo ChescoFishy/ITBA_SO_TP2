@@ -1,0 +1,17 @@
+# Archivos de Claude / planificación
+CLAUDE.md
+plan.md
+
+# Objetos y binarios de compilación
+*.o
+*.bin
+*.sys
+*.elf
+
+# Imágenes de disco generadas
+Image/*.img
+Image/*.qcow2
+Image/*.vmdk
+
+# Sistema operativo
+.DS_Store
