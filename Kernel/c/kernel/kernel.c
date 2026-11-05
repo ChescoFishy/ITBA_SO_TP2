@@ -84,7 +84,7 @@ void * initializeKernelBinary(void){
     }
 
     // Crear la shell como proceso foreground
-    process_create("shell", (ProcessEntry)sampleCodeModuleAddress, 0, NULL, 1);
+    process_create("sh", (ProcessEntry)sampleCodeModuleAddress, 0, NULL, 1);
 
     return getStackBase();
 }

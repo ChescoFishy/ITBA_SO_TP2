@@ -13,7 +13,8 @@ void kill_cmd(void){
     int enviados = 0;
     int64_t pid;
     while((pid = next_uint(&a)) > 0){
-        sys_kill((uint64_t)pid);
+        if(sys_kill((uint64_t)pid) < 0)
+            shellPrintString("kill: PID inexistente o de un proceso del sistema\n");
         enviados++;
     }
     if(enviados == 0)

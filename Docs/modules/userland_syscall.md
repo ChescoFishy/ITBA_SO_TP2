@@ -61,6 +61,7 @@ Los siguientes números deben cargarse en `RAX` y coincidir exactamente con el d
 - `26`: `sys_unblock`
 - `27`: `sys_yield`
 - `28`: `sys_waitpid`
+- `41`: `sys_detach`
 - `29`: `sys_sem_open`
 - `30`: `sys_sem_wait`
 - `31`: `sys_sem_post`

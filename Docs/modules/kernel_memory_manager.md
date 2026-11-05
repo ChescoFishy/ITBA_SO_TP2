@@ -42,6 +42,7 @@ La selección del administrador se realiza exclusivamente en **tiempo de compila
         uint64_t size;              /* Tamaño del payload útil (sin header) */
         int is_free;                /* Flag de estado */
         int is_kernel;              /* 1 si fue asignado por mm_malloc_kernel */
+        uint64_t owner;             /* PID dueño del bloque (0 si es del kernel) */
         struct MemBlock* next;      /* Puntero al siguiente bloque del heap */
     } MemBlock;
     ```
@@ -51,14 +52,16 @@ La selección del administrador se realiza exclusivamente en **tiempo de compila
         uint8_t order;      /* Potencia de 2 del tamaño total del bloque */
         uint8_t is_free;    /* 1 libre, 0 ocupado */
         uint8_t is_kernel;  /* 1 si fue asignado por mm_malloc_kernel */
-        uint8_t _pad[5];    /* Relleno de alineación a 8 bytes */
+        uint8_t _pad;       /* Relleno para alinear owner */
+        uint32_t owner;     /* PID dueño del bloque (0 si es del kernel) */
     } BlockHdr;
     ```
 * **Funciones fundamentales:**
   - `mm_init(void *start, uint64_t size)`: Configura los límites y estructuras iniciales del heap.
-  - `mm_malloc(uint64_t size)`: Reserva memoria de uso general para usuario.
+  - `mm_malloc(uint64_t size, uint64_t owner)`: Reserva memoria de uso general a nombre del proceso `owner`.
   - `mm_malloc_kernel(uint64_t size)`: Reserva memoria para estructuras internas del Kernel sin incrementar el recuento de bloques del usuario.
   - `mm_free(void *ptr)`: Libera un puntero.
+  - `mm_free_owned(uint64_t owner)`: Libera todos los bloques de un proceso. El kernel la llama cuando el proceso termina, ya que uno matado no llega a liberar su memoria.
 
 ## System Calls Relacionadas
 - **`sys_malloc` (Syscall 16):** Permite a los procesos de Userland solicitar memoria dinámica.

@@ -31,6 +31,7 @@ GLOBAL sys_block
 GLOBAL sys_unblock
 GLOBAL sys_yield
 GLOBAL sys_waitpid
+GLOBAL sys_detach
 GLOBAL sys_sem_open
 GLOBAL sys_sem_wait
 GLOBAL sys_sem_post
@@ -105,6 +106,11 @@ sys_yield:
 
 sys_waitpid:
     mov rax, 28
+    int 0x80
+    ret
+
+sys_detach:
+    mov rax, 41
     int 0x80
     ret
 

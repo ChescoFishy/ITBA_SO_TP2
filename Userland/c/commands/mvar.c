@@ -10,7 +10,15 @@
 ** la consume y la imprime en su color. Los hijos corren en background y se
 ** frenan con kill (ver sus pids con ps). */
 
-#define INTERVAL_MAX 20
+/* Duracion de la espera activa, en ticks de CPU. Los escritores esperan mucho mas
+** que los lectores: asi la velocidad la marcan ellos y no la cola FIFO del semaforo,
+** donde dos escritores siempre encolados alternarian sin importar su prioridad. */
+#define WRITER_WAIT_MIN    8
+#define WRITER_WAIT_SPREAD 2
+#define READER_WAIT_MIN    1
+#define READER_WAIT_SPREAD 2
+
+#define CALIBRATION_SPINS 1000
 #define MAX_WRITERS  26
 #define MAX_READERS  7
 
@@ -38,13 +46,36 @@ static const uint32_t reader_colors[MAX_READERS] = {
     0x55FFFF, /* cyan     */
 };
 
-/* Espera un intervalo aleatorio de ticks del timer (~18/seg) cediendo la CPU
-** mientras tanto. GetUniform comparte estado entre procesos (mismo address
+/* Iteraciones de spin() que entran en un tick de CPU. */
+static uint64_t spins_per_tick;
+
+static void spin(uint64_t iterations) {
+    for (volatile uint64_t i = 0; i < iterations; i++)
+        ;
+}
+
+/* Mide spins_per_tick contando las iteraciones entre dos ticks consecutivos. */
+static void calibrate_spin(void) {
+    sys_yield(); /* arrancar con el quantum completo */
+
+    uint64_t tick = sys_ticks();
+    while (sys_ticks() == tick)
+        ;
+
+    tick = sys_ticks();
+    spins_per_tick = 0;
+    while (sys_ticks() == tick) {
+        spin(CALIBRATION_SPINS);
+        spins_per_tick += CALIBRATION_SPINS;
+    }
+}
+
+/* Espera ACTIVA aleatoria, como pide el enunciado. Se mide en trabajo de CPU y no
+** en tiempo: un proceso con mas prioridad recibe mas CPU, termina antes su espera y
+** escribe mas seguido. GetUniform comparte estado entre procesos (mismo address
 ** space), lo que desfasa a los hijos entre si sin necesidad de seed propia. */
-static void random_wait(void) {
-    uint64_t target = sys_ticks() + GetUniform(INTERVAL_MAX);
-    while (sys_ticks() < target)
-        sys_yield();
+static void random_wait(uint32_t min_ticks, uint32_t spread) {
+    spin((min_ticks + GetUniform(spread)) * spins_per_tick);
 }
 
 /* Entry point del escritor. argv[0] = su letra ("A".."Z"). */
@@ -56,9 +87,10 @@ static void writer_main(int argc, char **argv) {
     sys_yield(); //Cedo temporalmente mi quantum para evitar superponerme al > de la shell
 
     while (1) {
-        random_wait();
+        random_wait(WRITER_WAIT_MIN, WRITER_WAIT_SPREAD);
 
-        sys_sem_wait(SEM_EMPTY);
+        if (sys_sem_wait(SEM_EMPTY) < 0) /* un mvar nuevo purgo los semaforos */
+            sys_exit(-1);
         mvar_value = letter;
         sys_sem_post(SEM_FULL);
     }
@@ -71,11 +103,13 @@ static void reader_main(int argc, char **argv) {
     uint32_t color = reader_colors[argv[0][0] - '0'];
 
     while (1) {
-        random_wait();
+        random_wait(READER_WAIT_MIN, READER_WAIT_SPREAD);
 
-        sys_sem_wait(SEM_FULL);
+        if (sys_sem_wait(SEM_FULL) < 0) /* un mvar nuevo purgo los semaforos */
+            sys_exit(-1);
         char c = mvar_value;
-        sys_write_color(STDOUT, &c, 1, color);
+        if ((int64_t)sys_write_color(STDOUT, &c, 1, color) < 0) /* pipe sin lectores */
+            sys_exit(-1);
         sys_sem_post(SEM_EMPTY);
     }
 }
@@ -105,6 +139,8 @@ void mvar_main(int argc, char **argv) {
         ;
     while (sys_sem_close(SEM_FULL) == 0)
         ;
+
+    calibrate_spin();
 
     mvar_value = 0;
     if (!sys_sem_open(SEM_EMPTY, 1) || !sys_sem_open(SEM_FULL, 0)) {

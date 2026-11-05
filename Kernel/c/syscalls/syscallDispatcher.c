@@ -14,7 +14,8 @@
 // ─── Syscalls de memoria (16-18) ──────────────────────────────────────────────
 
 uint64_t sys_malloc(uint64_t size) {
-    return (uint64_t)mm_malloc(size);
+    PCB *cur = process_current();
+    return (uint64_t)mm_malloc(size, (cur != NULL) ? cur->pid : 0);
 }
 
 void sys_free(uint64_t ptr) {
@@ -96,7 +97,9 @@ uint64_t sys_write_color(uint64_t fd, const char * buff, uint64_t count, uint32_
 /* sys_read: usa el fd[0] del PCB. Si es pipe, bloquea via semaforo del pipe y
 ** devuelve datos (>0) o 0 en EOF. Si es teclado (0): devuelve datos si hay,
 ** 0 en EOF (Ctrl+D), o SYS_READ_RETRY tras bloquear el proceso (sin datos).
-** El proceso se despierta cuando llega una tecla y reintenta desde userland. */
+** El proceso se despierta cuando llega una tecla y reintenta desde userland.
+** El teclado es del foreground: un proceso de background recibe EOF, sino le
+** robaria la entrada a la shell y la dejaria esperando para siempre. */
 uint64_t sys_read(char * buff, uint64_t count){
     PCB *cur = process_current();
     int phys_fd = (cur != NULL) ? cur->fd[0] : 0;
@@ -104,6 +107,10 @@ uint64_t sys_read(char * buff, uint64_t count){
     if (pipe_is_fd(phys_fd)) {
         int64_t n = pipe_read(phys_fd, buff, count);
         return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+    }
+
+    if (cur != NULL && !cur->foreground) {
+        return 0;
     }
 
     uint64_t n = readKeyBuff(buff, count);
@@ -183,13 +190,18 @@ void sys_fill_rect(uint64_t x, uint64_t y, uint64_t w, uint64_t h, uint32_t colo
 
 // ─── Syscalls de procesos (19-28) ─────────────────────────────────────────────
 
+/* El hijo hereda stdin/stdout del padre: asi la salida de los hijos de un proceso
+** conectado a un pipe tambien va al pipe, sin que su codigo lo sepa. */
 int64_t sys_create_process(uint64_t name, uint64_t entry,
                            uint64_t argc, uint64_t argv, uint64_t fg) {
-    return (int64_t)process_create((const char *)name,
-                                   (ProcessEntry)entry,
-                                   (int)argc,
-                                   (char **)argv,
-                                   (uint8_t)fg);
+    PCB *cur = process_current();
+    return (int64_t)process_create_fd((const char *)name,
+                                      (ProcessEntry)entry,
+                                      (int)argc,
+                                      (char **)argv,
+                                      (uint8_t)fg,
+                                      (cur != NULL) ? cur->fd[0] : 0,
+                                      (cur != NULL) ? cur->fd[1] : 1);
 }
 
 void sys_exit(uint64_t retval) {
@@ -205,20 +217,33 @@ uint64_t sys_ps(uint64_t buffer, uint64_t max_count) {
     return process_ps((ProcessInfo *)buffer, max_count);
 }
 
-void sys_kill(uint64_t pid) {
+/* Los procesos creados por el kernel (idle y sh, sin padre) no se pueden matar ni
+** bloquear: sin la shell no queda forma de seguir usando el sistema. */
+static int is_user_process(uint64_t pid) {
+    PCB *p = process_get(pid);
+    return p != NULL && p->parent_pid != 0;
+}
+
+int64_t sys_kill(uint64_t pid) {
+    if (!is_user_process(pid)) return -1;
     process_kill(pid);
+    return 0;
 }
 
 void sys_nice(uint64_t pid, uint64_t new_priority) {
     process_nice(pid, (uint8_t)new_priority);
 }
 
-void sys_block(uint64_t pid) {
+int64_t sys_block(uint64_t pid) {
+    if (!is_user_process(pid)) return -1;
     process_block(pid);
+    return 0;
 }
 
-void sys_unblock(uint64_t pid) {
+int64_t sys_unblock(uint64_t pid) {
+    if (!is_user_process(pid)) return -1;
     process_unblock(pid);
+    return 0;
 }
 
 void sys_yield(void) {
@@ -281,6 +306,10 @@ int64_t sys_pipe_open(const char *name, uint64_t fds) {
     return (int64_t)pipe_open(name, (int *)fds);
 }
 
+int64_t sys_detach(uint64_t pid) {
+    return (int64_t)process_detach(pid);
+}
+
 // ─── Tabla de syscalls ────────────────────────────────────────────────────────
 
 void * syscalls[CANT_SYS] = {
@@ -325,4 +354,5 @@ void * syscalls[CANT_SYS] = {
     &sys_set_cursor,        // 38
     &sys_console_rows,      // 39
     &sys_console_cols,      // 40
+    &sys_detach,            // 41
 };

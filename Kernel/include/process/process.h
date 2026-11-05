@@ -19,6 +19,14 @@ typedef enum {
     PROCESS_ZOMBIE  = 4
 } ProcessState;
 
+/* Situacion de un proceso respecto de un sem_wait bloqueante. */
+typedef enum {
+    SEM_WAIT_NONE = 0,  /* No esta esperando ningun semaforo */
+    SEM_WAIT_PENDING,   /* En la cola, todavia sin token */
+    SEM_WAIT_GRANTED,   /* sem_post ya le entrego el token, falta que corra */
+    SEM_WAIT_CLOSED     /* El semaforo se destruyo mientras esperaba */
+} SemWaitStatus;
+
 typedef void (*ProcessEntry)(int argc, char **argv);
 
 /* Tabla de procesos para Kernel. */
@@ -37,6 +45,9 @@ typedef struct PCB{
     int argc;                   /* Cantidad de argumentos (para pasar a la función entry) */
     char **argv;                /* Argumentos (para pasar a la función entry) */
     int retval;                 /* Valor de retorno del proceso (para que el padre lo lea en waitpid) */
+    uint8_t detached;           /* 1 si nadie hara waitpid: el kernel reclama slot y argv al terminar */
+    SemWaitStatus sem_wait;     /* Estado de su sem_wait bloqueante */
+    int sem_slot;               /* Semaforo esperado (valido si sem_wait != SEM_WAIT_NONE) */
 } PCB;
 
 /* Vista userland de un proceso diferenciado de Kernel. */
@@ -63,6 +74,12 @@ void process_block(uint64_t pid);
 void process_unblock(uint64_t pid);
 void process_nice(uint64_t pid, uint8_t new_priority);
 int process_waitpid(uint64_t pid);
+
+/* Desliga un hijo del llamante: nadie hara waitpid sobre el, asi que al terminar
+** el kernel libera su slot y su argv (debe ser un bloque de sys_malloc o NULL).
+** Devuelve 0 en exito; -1 si pid no es un hijo vivo o zombie del llamante, en cuyo
+** caso el argv sigue siendo responsabilidad del llamante. */
+int process_detach(uint64_t pid);
 uint64_t process_ps(ProcessInfo *buf, uint64_t max);
 
 /* Devuelve el PID del ultimo proceso foreground creado por la shell.

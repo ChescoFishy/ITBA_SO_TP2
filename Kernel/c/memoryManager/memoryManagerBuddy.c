@@ -21,8 +21,9 @@ typedef struct{
     uint8_t order;      /* Potencia de 2.*/
     uint8_t is_free;    /* Flag de disponibilidad. */
     uint8_t is_kernel;  /* 1 si fue asignado internamente por el kernel. */
-    uint8_t _pad[5];    /* Relleno para alinear a 8 bytes. */
-}BlockHdr;             
+    uint8_t _pad;       /* Relleno para alinear owner. */
+    uint32_t owner;     /* PID duenio del bloque (0 si es del kernel). */
+}BlockHdr;
 
 /* Bloque libre: reutiliza los primeros bytes del payload para el enlace. */ 
 typedef struct FreeNode{
@@ -115,7 +116,7 @@ void mm_init(void *start, uint64_t size){
     }
 }
 
-static void *malloc_impl(uint64_t size, int is_kernel){
+static void *malloc_impl(uint64_t size, int is_kernel, uint64_t owner){
     if(size == 0 || heap_base == NULL){
         return NULL;
     }
@@ -152,18 +153,19 @@ static void *malloc_impl(uint64_t size, int is_kernel){
 
     block->hdr.is_free = 0;
     block->hdr.is_kernel = (uint8_t)is_kernel;
+    block->hdr.owner = (uint32_t)owner;
     if(!is_kernel)
         alloc_count++;
 
     return (void *)((uintptr_t)block + sizeof(BlockHdr));
 }
 
-void *mm_malloc(uint64_t size){
-    return malloc_impl(size, USER);
+void *mm_malloc(uint64_t size, uint64_t owner){
+    return malloc_impl(size, USER, owner);
 }
 
 void *mm_malloc_kernel(uint64_t size){
-    return malloc_impl(size, KERNEL);
+    return malloc_impl(size, KERNEL, 0);
 }
 
 /* Libera un bloque de memoria asignado previamente por Buddy System. */
@@ -208,6 +210,24 @@ void mm_free(void *ptr){
     free_lists[order_idx(order)] = block;
 }
 
+
+/* Recorre el heap bloque a bloque liberando los del proceso. El fin del bloque se
+** calcula antes de liberarlo. Si mm_free lo fusiona con el buddy siguiente, el
+** header de ese buddy queda intacto (libre y con su order) y el recorrido sigue. */
+void mm_free_owned(uint64_t owner){
+    uintptr_t offset = 0;
+
+    while(offset < heap_total){
+        FreeNode *block = (FreeNode *)((uintptr_t)heap_base + offset);
+        uintptr_t next = offset + ((uintptr_t)1 << block->hdr.order);
+
+        if(!block->hdr.is_free && !block->hdr.is_kernel && block->hdr.owner == (uint32_t)owner){
+            mm_free((void *)((uintptr_t)block + sizeof(BlockHdr)));
+        }
+
+        offset = next;
+    }
+}
 
 /* Devuelve el estado actual de las memorias reservadas en el bloque status, sirve para chequeos */
 void mm_status(MemStatus *status){

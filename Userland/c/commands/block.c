@@ -16,10 +16,11 @@ void block_cmd(void){
     uint64_t cnt = sys_ps(buf, MAX_PROCESSES);
     for(uint64_t i = 0; i < cnt; i++){
         if(buf[i].pid == (uint64_t)pid){
-            if(buf[i].state == STATE_BLOCKED)
-                sys_unblock((uint64_t)pid);
-            else
-                sys_block((uint64_t)pid);
+            int64_t result = (buf[i].state == STATE_BLOCKED)
+                           ? sys_unblock((uint64_t)pid)
+                           : sys_block((uint64_t)pid);
+            if(result < 0)
+                shellPrintString("block: no se puede bloquear un proceso del sistema\n");
             return;
         }
     }

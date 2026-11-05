@@ -1,6 +1,6 @@
-# Archivos de Claude / planificación
+# Archivos de Claude
 CLAUDE.md
-plan.md
+
 
 # Objetos y binarios de compilación
 *.o
@@ -12,6 +12,7 @@ plan.md
 Image/*.img
 Image/*.qcow2
 Image/*.vmdk
+Image/*.log
 
 # Sistema operativo
 .DS_Store

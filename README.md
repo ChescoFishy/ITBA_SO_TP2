@@ -58,6 +58,20 @@ La selección es **exclusiva en compilación**: una imagen usa un único MM. Par
 | `make` / `make all` | First-Fit (default) |
 | `make buddy` | Buddy System (equivale a `make MM=BUDDY all`) |
 
+### Reglas `make` (en el host)
+
+Estas reglas se ejecutan fuera del contenedor. `make`, `make all` y `make buddy` quedan reservadas para compilar dentro de la imagen.
+
+| Regla | Acción |
+|-------|--------|
+| `make docker-pull` | Descarga la imagen `agodio/itba-so-multiarch:3.1` |
+| `make docker-create` | Descarga la imagen, crea y arranca el contenedor `TP_SO_2` (equivale a `./create.sh`) |
+| `make docker-compile` | Compila con First-Fit dentro del contenedor (equivale a `MM=FF ./compile.sh`) |
+| `make docker-compile-buddy` | Compila con Buddy System dentro del contenedor (equivale a `MM=BUDDY ./compile.sh`) |
+| `make qemu` | Arranca la imagen compilada (equivale a `./run.sh`) |
+
+`docker-compile`, `docker-compile-buddy` y `qemu` aceptan `TARGET=vbox` o `TARGET=usb`; por defecto usan `qemu`.
+
 ---
 
 ## Ejecutar
@@ -87,7 +101,7 @@ MM=BUDDY ./compile.sh && ./run.sh     # Buddy System
 
 ## Shell de usuario
 
-Al bootear se inicia una shell interactiva (`> `). La shell parsea la línea,
+Al bootear se inicia la shell interactiva `sh` (`> `). La shell parsea la línea,
 crea procesos hijos para los comandos que son procesos y espera (`waitpid`) a
 los de foreground antes de mostrar de nuevo el prompt.
 
@@ -116,7 +130,6 @@ los de foreground antes de mostrar de nuevo el prompt.
 | `help` | — | Lista todos los comandos y operadores. |
 | `clear` | — | Limpia la pantalla. |
 | `mem` | — | Estado de la memoria: total, usada, libre y bloques asignados. |
-| `ps` | — | Lista procesos: PID, prioridad, foreground, estado y nombre. |
 | `kill` | `<pid>` | Mata el proceso con ese PID. |
 | `nice` | `<pid> <prioridad>` | Cambia la prioridad (1–5) de un proceso. |
 | `block` | `<pid>` | Alterna el estado del proceso entre BLOCKED y READY. |
@@ -125,11 +138,16 @@ los de foreground antes de mostrar de nuevo el prompt.
 
 | Comando | Parámetros | Descripción |
 |---------|-----------|-------------|
+| `ps` | — | Lista procesos: PID, prioridad, foreground, estado, stack pointer, base pointer y nombre. |
 | `loop` | `[ticks]` | Imprime su PID periódicamente con espera activa (default 18 ticks ≈ 1 s). |
 | `cat` | — | Copia stdin a stdout hasta EOF. Funciona standalone (teclado + `Ctrl+D`) y con pipes. |
 | `wc` | — | Cuenta las líneas recibidas por stdin. |
 | `filter` | — | Reimprime stdin filtrando las vocales. |
 | `mvar` | `<escritores> <lectores>` | Demo lectores/escritores con una MVar sincronizada por dos semáforos nombrados. Crea los hijos y termina de inmediato. |
+| `echo` | `[args...]` | Imprime sus argumentos. |
+| `astdin` | — | Emite la letra `a` por stdout (útil con pipes). |
+| `red` | — | Imprime stdin en rojo. |
+| `test_pipe` | `[bytes]` | Test propio del grupo: productor y consumidor conectados por un pipe. |
 
 ### Tests de cátedra
 
@@ -191,20 +209,87 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 
 ---
 
+## Decisiones de diseño
+
+- **Núcleo sin separación de privilegios ni paginación:** kernel y userland corren en
+  ring 0 y comparten espacio de direcciones. Los procesos de usuario solo interactúan
+  con el kernel mediante syscalls (`int 0x80`).
+- **Memory managers intercambiables:** First-Fit y Buddy System implementan la misma
+  interfaz (`memoryManager.h`). La variable `MM` del Makefile elige cuál se compila, de
+  modo que una imagen contiene un único administrador.
+- **Scheduler:** Round Robin con prioridades 1 a 5. La prioridad determina cuántos
+  quanta consecutivos recibe un proceso. Si no hay procesos listos corre `idle`.
+- **Procesos:** tabla fija de PCBs y stacks de 4 KB. Un proceso terminado queda ZOMBIE
+  solo si su padre todavía puede esperarlo. La shell desliga a los de background con
+  `sys_detach`, y el kernel reclama su slot y su `argv` al terminar.
+- **Semáforos con nombre:** procesos no relacionados los comparten acordando el nombre.
+  La tabla se protege con un lock tomado mediante `xchg`, y los procesos bloqueados
+  esperan en una cola por semáforo, sin busy waiting.
+- **Pipes:** buffer circular protegido por tres semáforos (`data`, `space`, `mutex`).
+  Leer o escribir es transparente porque stdin y stdout de cada proceso se resuelven a
+  través de su PCB. La shell los asigna al crear al hijo, por eso no hace falta `dup2`.
+- **Builtins y procesos:** los comandos que deben ejecutarse sobre la shell son builtins.
+  El resto son procesos, y por eso admiten `&` y `|`.
+
+---
+
 ## Limitaciones conocidas
 
 - Se soporta **un solo `|`** por línea (no cadenas de varios pipes).
 - Los **builtins** no admiten `&` ni `|`.
 - No existe `sys_dup2`: la shell conecta los pipes asignando stdin/stdout del
   hijo al crearlo (`sys_create_process_fd`).
-- Los procesos **background** que terminan quedan como ZOMBIE hasta llenar la
-  tabla (no hay reaper de huérfanos); el límite es `MAX_PROCESSES = 64`.
-- Solo se registra **un** proceso esperando teclado a la vez (en la práctica
-  solo el foreground lee de stdin).
+- La tabla de procesos tiene un máximo de `MAX_PROCESSES = 64` procesos simultáneos.
+- Solo el **foreground** lee del teclado: un proceso de background que lee stdin
+  recibe EOF. Por eso `cat &` termina de inmediato.
+- `idle` y `sh` no se pueden matar ni bloquear.
+- `kill` y `Ctrl+C` matan también a los descendientes del proceso. Un proceso que
+  termina normalmente deja a sus hijos corriendo (`mvar` termina apenas los crea).
+- Un proceso matado dentro de su sección crítica no devuelve su token: el kernel no
+  sabe qué semáforos tiene tomados, y quienes esperen ese semáforo quedan bloqueados.
+- La prioridad de un proceso solo cambia su parte de CPU. Con los valores por defecto,
+  subir un escritor de `mvar` a 5 le da 5 ticks contra 3 del otro.
 - Sin paginación: todos los procesos comparten el mismo espacio de direcciones.
 - El árbol conserva **comandos heredados de x64BareBones** (arquitectura, benchmarks
   `bm*`, manejo de excepciones) que **no forman parte de la entrega de TP2**: no están
   registrados en la tabla `commands[]` de la shell y se mantienen solo como referencia.
+
+---
+
+## Problemas encontrados y soluciones
+
+- **Triple fault al arrancar un proceso:** en long mode `iretq` siempre extrae RIP, CS,
+  RFLAGS, RSP y SS. El stack inicial se arma con el frame completo.
+- **Procesos cuyo entry retorna sin `sys_exit`:** el `ret` saltaba a basura porque el
+  stack inicial no tiene dirección de retorno. Todo proceso arranca en un trampolín que
+  llama al entry y luego termina el proceso.
+- **Carrera en EOF y broken pipe:** un lector o escritor podía bloquearse justo después
+  de comprobar que el otro extremo se había cerrado. Al cerrarse el último extremo se
+  postea el semáforo `MAX_PROCESSES` veces para despertar a los bloqueados y a los que
+  lleguen después.
+- **Fuga de slots de procesos:** los procesos terminados que nadie esperaba ocupaban la
+  tabla hasta llenarla. Se agregaron la liberación del slot cuando el padre ya no puede
+  esperar, y `sys_detach` para los procesos de background.
+- **Ctrl+C mataba a la shell:** solo se registran como foreground los procesos creados
+  por otro proceso, no los creados durante la inicialización del kernel.
+- **Argumentos inválidos en los hijos:** el `argv` apuntaba a memoria del padre que
+  podía dejar de ser válida. La shell lo copia al heap y `mvar` usa almacenamiento
+  estático.
+- **Valores viejos en semáforos con nombre:** `sem_open` sobre un nombre existente
+  conserva su valor, lo que rompía `mvar` y `test_sync` entre corridas. Estos comandos
+  purgan sus semáforos antes de abrirlos.
+- **`help` perdía líneas con la fuente agrandada:** la consola no tiene scrollback. Se
+  agregó un paginador que cuenta filas físicas.
+
+---
+
+## Citas de fragmentos de código
+
+- **x64BareBones:** base del proyecto, proveniente del TP de Arquitectura de
+  Computadoras (se conservan comandos heredados, ver *Limitaciones conocidas*).
+- **Pure64 y BMFS:** bootloader y sistema de archivos incluidos en `Bootloader/`.
+- **Tests de la cátedra:** `test_mm`, `test_proc`, `test_prio` y `test_sync` están
+  adaptados de los tests provistos.
 
 ---
 

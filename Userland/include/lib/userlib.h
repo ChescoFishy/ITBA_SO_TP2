@@ -101,12 +101,13 @@ int64_t  sys_create_process(const char *name, void *entry,
 void     sys_exit(int retval);
 uint64_t sys_getpid(void);
 uint64_t sys_ps(ProcessInfo *buffer, uint64_t max_count);
-void     sys_kill(uint64_t pid);
+int64_t  sys_kill(uint64_t pid);
 void     sys_nice(uint64_t pid, uint64_t new_priority);
-void     sys_block(uint64_t pid);
-void     sys_unblock(uint64_t pid);
+int64_t  sys_block(uint64_t pid);
+int64_t  sys_unblock(uint64_t pid);
 void     sys_yield(void);
 int64_t  sys_waitpid(uint64_t pid);
+int64_t  sys_detach(uint64_t pid);
 int64_t  sys_sem_open(const char *name, uint64_t initial_value);
 int64_t  sys_sem_wait(const char *name);
 int64_t  sys_sem_post(const char *name);

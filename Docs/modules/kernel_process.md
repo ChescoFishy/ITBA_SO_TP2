@@ -78,11 +78,13 @@ Al crear un proceso (`process_create_fd`):
 - **`sys_ps` (Syscall 22):** Llena un buffer de estructuras `ProcessInfo` para listar procesos activos.
 - **`sys_kill` (Syscall 23):** Envía señal de muerte a un proceso por su PID.
 - **`sys_nice` (Syscall 24):** Altera el nivel de prioridad de un proceso dado.
-- **`sys_block` (Syscall 25) / `sys_unblock` (Syscall 26):** Cambian el estado del proceso entre bloqueado y listo.
+- **`sys_block` (Syscall 25) / `sys_unblock` (Syscall 26):** Cambian el estado del proceso entre bloqueado y listo. Devuelven -1 si el PID no existe o es de `idle` o `sh`.
 - **`sys_yield` (Syscall 27):** Cede voluntariamente el procesador.
-- **`sys_waitpid` (Syscall 28):** Suspende al invocante hasta la finalización de un proceso hijo.
+- **`sys_waitpid` (Syscall 28):** Suspende al invocante hasta la finalización de un proceso hijo. Devuelve -1 si el PID no es un hijo propio.
+- **`sys_detach` (Syscall 41):** Desliga un hijo para que el kernel reclame su slot y su `argv` al terminar, sin `waitpid`.
 
 ## Comments and Limitations (Comentarios y Limitaciones)
 - **Límite de Procesos:** La cantidad máxima de procesos concurrentes está acotada por `MAX_PROCESSES = 64`.
 - **Aislamiento Físico Inexistente:** Al no estar implementada la paginación de memoria virtual a nivel de procesos (esquema Identity Mapping), no existe protección real de memoria. Cualquier proceso de usuario errante puede leer o escribir datos del stack o sección de datos de otro proceso o del propio Kernel.
+- **Matar a un proceso:** `sys_kill` y `Ctrl+C` matan también a sus descendientes y liberan la memoria que cada uno reservó. `sys_kill` devuelve -1 si el PID no existe o es de `idle` o `sh`. Un proceso que termina normalmente deja a sus hijos corriendo.
 - **Fuga de Zombies:** Si un proceso padre finaliza antes de cosechar a sus hijos zombies, el Kernel limpia los recursos de los huérfanos marcándolos como `PROCESS_FREE` para evitar filtraciones en la tabla de procesos.

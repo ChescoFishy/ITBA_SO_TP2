@@ -33,10 +33,10 @@ int64_t  sys_create_process(uint64_t name, uint64_t entry,
 void     sys_exit(uint64_t retval);
 uint64_t sys_getpid(void);
 uint64_t sys_ps(uint64_t buffer, uint64_t max_count);
-void     sys_kill(uint64_t pid);
+int64_t  sys_kill(uint64_t pid);
 void     sys_nice(uint64_t pid, uint64_t new_priority);
-void     sys_block(uint64_t pid);
-void     sys_unblock(uint64_t pid);
+int64_t  sys_block(uint64_t pid);
+int64_t  sys_unblock(uint64_t pid);
 void     sys_yield(void);
 int64_t  sys_waitpid(uint64_t pid);
 
@@ -65,5 +65,6 @@ void sys_set_cursor(uint64_t on);
 // Syscalls 39-40 (filas/columnas de texto disponibles, para paginar)
 uint64_t sys_console_rows(void);
 uint64_t sys_console_cols(void);
+int64_t  sys_detach(uint64_t pid);
 
 #endif

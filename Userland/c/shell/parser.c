@@ -89,7 +89,7 @@ static Command *find_cmd(const char *name){
 /* Duplica argv (apuntadores + strings) en un solo bloque heap. Usado para
 ** procesos background, ya que el buff de la shell se reescribe en el
 ** proximo readline. Layout: [char*[argc]] | [strings concatenadas].
-** Retorna NULL si no hay memoria. El bloque queda en leak (proceso bg). */
+** Retorna NULL si no hay memoria. */
 static char **dup_argv(int argc, char **argv){
     if(argc <= 0) return 0;
     uint64_t strs = 0;
@@ -107,8 +107,17 @@ static char **dup_argv(int argc, char **argv){
     return out;
 }
 
+/* La shell no va a esperar a un proceso de background: lo desliga para que el
+** kernel reclame su slot y su argv al terminar. Si no se pudo (no se creo o ya
+** lo mataron), el argv sigue siendo de la shell. */
+static void detach_background(int64_t pid, char **argv){
+    if(pid <= 0 || sys_detach((uint64_t)pid) < 0){
+        if(argv) sys_free(argv);
+    }
+}
+
 /* Spawnea un proceso entry con los args dados. Para fg, hace waitpid y libera
-** el bloque argv heap. Para bg, deja correr y reporta el PID. */
+** el bloque argv heap. Para bg, lo desliga y reporta el PID. */
 static void spawn_simple(Command *c, int argc, char **argv, uint8_t fg){
     char **owned_argv = dup_argv(argc, argv);
     if(argc > 0 && owned_argv == 0){
@@ -126,7 +135,7 @@ static void spawn_simple(Command *c, int argc, char **argv, uint8_t fg){
         sys_waitpid((uint64_t)pid);
         if(owned_argv) sys_free(owned_argv);
     } else {
-        /* bg: leak intencional de owned_argv hasta el fin del kernel. */
+        detach_background(pid, owned_argv);
         char numbuf[16];
         num_to_str((uint64_t)pid, numbuf, 10);
         shellPrintString("[bg] pid ");
@@ -187,6 +196,8 @@ static void spawn_pipe(Command *c1, int argc1, char **argv1,
         if(a1) sys_free(a1);
         if(a2) sys_free(a2);
     } else {
+        detach_background(pid1, a1);
+        detach_background(pid2, a2);
         char numbuf[16];
         num_to_str((uint64_t)pid1, numbuf, 10);
         shellPrintString("[bg] pid ");

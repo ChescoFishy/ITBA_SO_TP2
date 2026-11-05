@@ -6,7 +6,7 @@ El módulo [[kernel_ipc.md|IPC]] (Comunicación entre Procesos) provee los mecan
 ## Functionality (¿Qué hace?)
 ### 1. Semáforos Nombrados
 - Permiten la sincronización y protección de secciones críticas entre procesos no relacionados genéticamente mediante identificadores alfanuméricos.
-- Ofrecen operaciones atómicas de espera (`sem_wait`), señalización (`sem_post`), y difusión (`sem_broadcast`).
+- Ofrecen operaciones atómicas de espera (`sem_wait`) y señalización (`sem_post`).
 - Manejan colas de espera por semáforo para evitar el uso de *busy waiting* (espera activa), bloqueando y suspendiendo procesos de la cola de ejecución.
 - Garantizan exclusión mutua interna utilizando spinlocks atómicos por hardware (`lock xchg`).
 
@@ -20,11 +20,13 @@ El módulo [[kernel_ipc.md|IPC]] (Comunicación entre Procesos) provee los mecan
 ## Internal Mechanics (¿Cómo funciona?)
 ### 1. Sincronización: Semáforos
 - **Spinlock de Control:** Toda mutación sobre la tabla de semáforos se serializa utilizando el cerrojo global `sem_lock` y las funciones ensamblador `acquire` y `release` de `libasm.asm`. `acquire` realiza un ciclo ocupado ejecutando `xchg rax, [rdi]` (donde `rax` es 1), garantizando atomicidad mediante el bloqueo del bus de memoria por hardware.
-- **Mecanismo de Bloqueo (Semántica Mesa):** Al ejecutar `sem_wait`:
+- **Mecanismo de Bloqueo (Entrega directa del token):** Al ejecutar `sem_wait`:
   - Si `s->value > 0`, se decrementa el valor y se otorga el recurso de inmediato.
   - Si `s->value == 0`, el proceso actual se agrega a la cola circular `s->wait_queue[MAX_PROCESSES]`, se marca su estado como `PROCESS_BLOCKED` mediante `process_block()`, se libera `sem_lock` y se cede el procesador llamando a `kernel_yield()` (`int 0x81`).
-  - Al despertarse, el proceso vuelve al inicio del ciclo `while(1)` para re-chequear el valor del semáforo. Esto previene condiciones de carrera si otro proceso de mayor prioridad consume el recurso en el intervalo transcurrido desde el desbloqueo (Semántica Mesa).
-- **Señalización:** Al ejecutar `sem_post`, se incrementa `s->value`. Si hay procesos bloqueados en la cola (`s->wait_count > 0`), se remueve el primero de la cola mediante `queue_pop` y se lo pasa a listos usando `process_unblock()`.
+  - Al despertarse ya tiene el token y retorna sin re-chequear `value`. Si lo despertó algo distinto de `sem_post` (`sys_unblock` o el comando `block`), sigue en la cola y vuelve a bloquearse.
+- **Señalización:** Al ejecutar `sem_post`, si hay procesos en la cola (`s->wait_count > 0`) se le entrega el token al primero (`SEM_WAIT_GRANTED`) y se lo pasa a listos con `process_unblock()`, sin incrementar `s->value`. Si la cola está vacía, se incrementa `s->value`. Como un proceso que llega después no puede adelantarse a los de la cola, el orden es FIFO y no hay inanición.
+- **Procesos que mueren esperando:** `sem_cancel_wait` retira de la cola al proceso matado y, si ya tenía un token entregado que no llegó a usar, lo devuelve. El token de un proceso matado dentro de su sección crítica no se recupera.
+- **Destrucción:** Cuando `sem_close` destruye el semáforo, los procesos que seguían en la cola se despiertan y su `sem_wait` retorna `-1`.
 
 ### 2. Comunicación: Pipes
 - **Buffer Circular y Semáforos de Estado:** Cada `Pipe` gestiona un buffer circular de caracteres de tamaño `PIPE_BUF_SIZE = 4096`. El control de bloqueo por falta de espacio o falta de datos se realiza asociando internamente tres semáforos nombrados únicos al inicializar la tubería:

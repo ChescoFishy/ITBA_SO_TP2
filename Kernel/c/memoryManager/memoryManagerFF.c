@@ -8,6 +8,7 @@ typedef struct MemBlock {
     uint64_t size;              /* Tamaño del bloque (sin contar el header) */
     int is_free;                /* 1 si esta libre, 0 si esta asignado */
     int is_kernel;              /* 1 si fue asignado internamente por el kernel */
+    uint64_t owner;             /* PID duenio del bloque (0 si es del kernel) */
     struct MemBlock* next;      /* Siguiente bloque en la lista */
 } MemBlock;
 
@@ -30,7 +31,7 @@ void mm_init(void *start, uint64_t size){
     heap_start->next = NULL;
 }
 
-static void *malloc_impl(uint64_t size, int is_kernel){
+static void *malloc_impl(uint64_t size, int is_kernel, uint64_t owner){
     if(size == 0 || heap_start == NULL){
         return NULL;
     }
@@ -55,6 +56,7 @@ static void *malloc_impl(uint64_t size, int is_kernel){
 
             block->is_free = 0;
             block->is_kernel = is_kernel;
+            block->owner = owner;
             return (void*)(block + 1);
         }
 
@@ -64,12 +66,12 @@ static void *malloc_impl(uint64_t size, int is_kernel){
     return NULL;
 }
 
-void *mm_malloc(uint64_t size){
-    return malloc_impl(size, USER);
+void *mm_malloc(uint64_t size, uint64_t owner){
+    return malloc_impl(size, USER, owner);
 }
 
 void *mm_malloc_kernel(uint64_t size){
-    return malloc_impl(size, KERNEL);
+    return malloc_impl(size, KERNEL, 0);
 }
 
 void mm_free(void *ptr){
@@ -97,6 +99,22 @@ void mm_free(void *ptr){
     if(prev != NULL && prev->is_free){
         prev->size += sizeof(MemBlock) + block->size;
         prev->next = block->next;
+    }
+}
+
+void mm_free_owned(uint64_t owner){
+    MemBlock* block = heap_start;
+
+    while(block != NULL){
+        /* next se toma antes de liberar. Si mm_free absorbe al bloque siguiente,
+        ** su header queda intacto (libre y con next valido) y el recorrido sigue. */
+        MemBlock* next = block->next;
+
+        if(!block->is_free && !block->is_kernel && block->owner == owner){
+            mm_free(block + 1);
+        }
+
+        block = next;
     }
 }
 

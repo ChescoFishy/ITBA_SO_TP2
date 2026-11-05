@@ -14,7 +14,7 @@ El módulo de Llamadas al Sistema ([[kernel_syscalls.md|Syscalls]]) es la API qu
 ## Internal Mechanics (¿Cómo funciona?)
 1. **El Handler de Assembly (`_irq128Handler`):** Al ejecutarse `int 0x80`, la CPU guarda en el stack el frame de hardware y entra a `_irq128Handler` en `interrupts.asm`, el cual realiza un `pushState` para resguardar todos los registros.
 2. **Despacho y Convención de Llamada:** 
-   - El handler compara `RAX` con el límite superior de syscalls registradas (`CANT_SYS = 39`). Si `RAX >= 39`, escribe `-1` en el slot RAX del stack y sale.
+   - El handler compara `RAX` con el límite superior de syscalls registradas (`CANT_SYS = 42`). Si `RAX >= 42`, escribe `-1` en el slot RAX del stack y sale.
    - Si es válido, ejecuta `call [syscalls + rax * 8]`. Como la arquitectura x86-64 utiliza la especificación System V ABI, los primeros seis parámetros pasados por el usuario ya se ubican en los registros: `RDI`, `RSI`, `RDX`, `RCX`, `R8`, y `R9`. El compilador de C mapea de forma transparente estos registros a los argumentos de la función de C invocada.
 3. **Preservación del Valor de Retorno:** El valor devuelto por la función de C queda en `RAX`. Para evitar que el `popState` posterior de assembly lo pise con el valor original de RAX, la rutina de assembly copia `RAX` directamente en el slot de RAX de la pila guardada:
    `mov [rsp + 14 * 8], rax`
@@ -49,7 +49,8 @@ El módulo de Llamadas al Sistema ([[kernel_syscalls.md|Syscalls]]) es la API qu
   - **24: `sys_nice`:** Actualiza la prioridad de ejecución de un proceso (1 a 5).
   - **25: `sys_block` / 26: `sys_unblock`:** Bloquea o desbloquea procesos.
   - **27: `sys_yield`:** Cede voluntariamente el procesador.
-  - **28: `sys_waitpid`:** Bloquea al padre hasta la finalización de un proceso hijo.
+  - **28: `sys_waitpid`:** Bloquea al padre hasta la finalización de un proceso hijo. Devuelve -1 si el PID no es un hijo propio.
+  - **41: `sys_detach`:** Desliga un hijo: al terminar, el kernel reclama su slot y su `argv`. La shell lo usa con los procesos de background.
   - **29: `sys_sem_open` / 32: `sys_sem_close`:** Creación/apertura y cierre de semáforos nombrados.
   - **30: `sys_sem_wait` / 31: `sys_sem_post`:** Operaciones de sincronización sobre semáforos.
   - **33: `sys_pipe` / 34: `sys_pipe_close`:** Creación y destrucción de pipes anónimos.
@@ -60,5 +61,5 @@ El módulo de Llamadas al Sistema ([[kernel_syscalls.md|Syscalls]]) es la API qu
 Este módulo es el despachador que encapsula la totalidad de las syscalls del sistema.
 
 ## Comments and Limitations (Comentarios y Limitaciones)
-- **Límite Rígido:** La tabla está acotada a `CANT_SYS = 39`. El agregado de llamadas requiere extender este límite, registrar el puntero en `syscallDispatcher.c`, y declarar el prototipo coincidente tanto en el header del Kernel como en la librería de Userland (`userlib.asm` y `userlib.h`).
+- **Límite Rígido:** La tabla está acotada a `CANT_SYS = 42`. El agregado de llamadas requiere extender este límite, registrar el puntero en `syscallDispatcher.c`, y declarar el prototipo coincidente tanto en el header del Kernel como en la librería de Userland (`userlib.asm` y `userlib.h`).
 - **Compuertas de Interrupción (IF=0):** La IDT configura la syscall como una "Interrupt Gate", lo que apaga automáticamente el flag de interrupción (`IF`) al ingresar al handler. Esto garantiza que la ejecución de la syscall en el Kernel sea atómica y no sea interrumpida por el planificador, previniendo condiciones de carrera en secciones críticas.

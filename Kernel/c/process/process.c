@@ -3,6 +3,7 @@
 #include "memoryManager/memoryManager.h"
 #include "lib/lib.h"
 #include "ipc/pipe.h"
+#include "ipc/semaphore.h"
 #include "interrupts/interrupts.h"
 #include <stddef.h>
 
@@ -179,6 +180,8 @@ int process_create_fd(const char *name, ProcessEntry entry, int argc, char **arg
     p->argc = argc;
     p->argv = argv;
     p->retval = 0;
+    p->detached = 0;
+    p->sem_wait = SEM_WAIT_NONE;
 
     str_copy(p->name, name, MAX_NAME_LEN);
 
@@ -237,21 +240,52 @@ static int wake_waiting_parent(PCB *p){
     return 0;
 }
 
-/* Limpieza comun a exit y kill: pipes, fg_pid, retval, despertar padre.
+/* Limpieza comun a exit y kill: semaforo esperado, pipes, fg_pid, retval,
+** despertar padre. El semaforo va primero: cerrar los pipes postea sobre sus
+** semaforos y no debe entregarle un token a este proceso.
 ** Devuelve 1 si un padre que esperaba ya consumio el retval. */
 static int release_pcb_resources(PCB *p, int retval){
+    sem_cancel_wait(p);
     close_process_pipes(p);
     if(p->pid == fg_pid) fg_pid = 0;
     p->retval = retval;
     return wake_waiting_parent(p);
 }
 
+/* Devuelve el slot a la tabla. El argv de un proceso desligado pasa a ser del
+** kernel (ver process_detach), asi que se libera aca. */
+static void free_slot(PCB *p){
+    if(p->detached && p->argv != NULL){
+        mm_free(p->argv);
+    }
+    p->argv = NULL;
+    p->detached = 0;
+    p->state = PROCESS_FREE;
+    p->pid = 0;
+}
+
+/* Un padre ZOMBIE ya termino: nunca va a hacer waitpid. */
+static int parent_can_wait(const PCB *p){
+    PCB *parent = process_get(p->parent_pid);
+    return parent != NULL && parent->state != PROCESS_ZOMBIE;
+}
+
+/* Al terminar un proceso nadie mas puede esperar a sus hijos ya terminados. */
+static void reap_zombie_children(uint64_t parent_pid){
+    for(int i = 0; i < MAX_PROCESSES; i++){
+        PCB *c = &process_table[i];
+        if(c->state == PROCESS_ZOMBIE && c->parent_pid == parent_pid){
+            free_slot(c);
+        }
+    }
+}
+
 /* Finaliza el slot de un proceso que ya no va a ejecutarse. Si el padre ya
-** consumio el retval (estaba en waitpid) o el proceso quedo huerfano (padre
-** muerto), se libera el slot directamente: nadie hara (otro) waitpid. Si el
-** padre sigue vivo pero todavia no espero, se deja ZOMBIE para un waitpid
-** futuro (recien ahi se reclama el slot). Asi no se filtran slots con cada
-** comando de foreground. */
+** consumio el retval (estaba en waitpid), el proceso esta desligado o quedo
+** huerfano (padre muerto), se libera el slot directamente: nadie hara (otro)
+** waitpid. Si el padre sigue vivo pero todavia no espero, se deja ZOMBIE para
+** un waitpid futuro (recien ahi se reclama el slot). Asi no se filtran slots
+** ni con comandos de foreground ni de background. */
 static void finalize_pcb(PCB *p, int reaped){
     scheduler_remove(p);
     if(p->stack_base != NULL){
@@ -260,9 +294,13 @@ static void finalize_pcb(PCB *p, int reaped){
     }
     p->rsp = NULL;
 
-    if(reaped || process_get(p->parent_pid) == NULL){
-        p->state = PROCESS_FREE;
-        p->pid = 0;
+    /* Un proceso matado no llega a liberar lo que reservo con sys_malloc. */
+    mm_free_owned(p->pid);
+
+    reap_zombie_children(p->pid);
+
+    if(reaped || p->detached || !parent_can_wait(p)){
+        free_slot(p);
     } else {
         p->state = PROCESS_ZOMBIE;
     }
@@ -280,6 +318,17 @@ void process_kill(uint64_t pid){
     PCB* p = process_get(pid);
     if(p == NULL || p->state == PROCESS_FREE || p->state == PROCESS_ZOMBIE){
         return;
+    }
+
+    /* Matar a un proceso se lleva a sus descendientes: sino los hijos de un test
+    ** interrumpido con Ctrl+C seguirian corriendo sin que nadie pueda esperarlos.
+    ** Terminar normalmente (process_exit) no los afecta: mvar termina apenas crea
+    ** a sus lectores y escritores, que deben seguir corriendo. */
+    for(int i = 0; i < MAX_PROCESSES; i++){
+        PCB *child = &process_table[i];
+        if(child->state != PROCESS_FREE && child->parent_pid == pid){
+            process_kill(child->pid);
+        }
     }
 
     int reaped = release_pcb_resources(p, -1);
@@ -347,10 +396,12 @@ void process_nice(uint64_t pid, uint8_t new_priority){
     p->remaining_quanta = new_priority;
 }
 
-/* Espera a que un proceso hijo termine. */
+/* Espera a que un proceso hijo termine. Solo se puede esperar a hijos propios
+** que no esten desligados. */
 int process_waitpid(uint64_t pid){
     PCB* child = process_get(pid);
-    if(child == NULL){
+    if(child == NULL || current_process == NULL
+       || child->parent_pid != current_process->pid || child->detached){
         return -1;
     }
 
@@ -360,20 +411,34 @@ int process_waitpid(uint64_t pid){
         int retval = child->retval;
 
         /* Reclama el proceso de la tabla de procesos. */
-        child->state = PROCESS_FREE;
-        child->pid = 0;
+        free_slot(child);
 
         return retval;
     }
 
-    if(current_process != NULL){
-        /* Hijo todavia vivo: bloquear y esperar */
-        current_process->state = PROCESS_BLOCKED;
-        current_process->waiting_for = pid;
-    }
+    /* Hijo todavia vivo: bloquear y esperar */
+    current_process->state = PROCESS_BLOCKED;
+    current_process->waiting_for = pid;
 
     force_switch = 1;
     // El retval real sera escrito por process_exit en rsp[14].
+    return 0;
+}
+
+int process_detach(uint64_t pid){
+    PCB* child = process_get(pid);
+    if(child == NULL || current_process == NULL
+       || child->parent_pid != current_process->pid){
+        return -1;
+    }
+
+    child->detached = 1;
+
+    /* Pudo haber terminado antes de que el padre llegara a desligarlo. */
+    if(child->state == PROCESS_ZOMBIE){
+        free_slot(child);
+    }
+
     return 0;
 }
 

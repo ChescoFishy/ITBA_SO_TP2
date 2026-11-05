@@ -9,10 +9,11 @@
 extern void acquire(uint64_t *lock);
 extern void release(uint64_t *lock);
 
-/* Un unico lock global protege toda la tabla de semaforos. Todas las
-** operaciones de semaforo corren en contexto de syscall (int 0x80, interrupt
-** gate con IF=0) y ninguna ISR toca esta tabla, por lo que no hay riesgo de
-** deadlock por reentrancia desde una interrupcion. */
+/* Un unico lock global protege toda la tabla de semaforos. Las syscalls corren
+** con IF=0 (int 0x80 es un interrupt gate) y lo sueltan antes de ceder la CPU,
+** asi que nunca esta tomado con interrupciones habilitadas. Por eso el Ctrl+C
+** del teclado, que puede llegar aca via process_kill, no puede encontrarlo
+** tomado: no hay riesgo de deadlock por reentrancia. */
 static uint64_t sem_lock = 0;
 
 #define MAX_SEMS     32
@@ -64,6 +65,40 @@ static uint64_t queue_pop(Semaphore *s) {
     s->wait_head = (s->wait_head + 1) % MAX_PROCESSES;
     s->wait_count--;
     return pid;
+}
+
+/* Saca un PID de la cola conservando el orden FIFO de los demas. */
+static void queue_remove(Semaphore *s, uint64_t pid) {
+    int kept = 0;
+    int i;
+    for (i = 0; i < s->wait_count; i++) {
+        uint64_t queued = s->wait_queue[(s->wait_head + i) % MAX_PROCESSES];
+        if (queued != pid) {
+            s->wait_queue[(s->wait_head + kept) % MAX_PROCESSES] = queued;
+            kept++;
+        }
+    }
+    s->wait_count = kept;
+    s->wait_tail  = (s->wait_head + kept) % MAX_PROCESSES;
+}
+
+/* Despierta al primero de la cola informandole como termino su espera. */
+static void wake_first(Semaphore *s, SemWaitStatus status) {
+    PCB *waiter = process_get(queue_pop(s));
+    if (waiter != NULL) {
+        waiter->sem_wait = status;
+        process_unblock(waiter->pid);
+    }
+}
+
+/* Entrega el token: si hay alguien esperando se lo pasa directamente, sin que
+** value suba. Asi ningun proceso que llegue despues puede ganarle el token a
+** los que ya estan en la cola (FIFO), lo que evita la inanicion. */
+static void release_token(Semaphore *s) {
+    if (s->wait_count > 0)
+        wake_first(s, SEM_WAIT_GRANTED);
+    else
+        s->value++;
 }
 
 /* ── API pública ─────────────────────────────────────────────────────────── */
@@ -121,44 +156,55 @@ int64_t sem_open(const char *name, uint64_t initial_value) {
 
 /* Decrementa el semáforo; bloquea el proceso actual si no hay tokens.
 ** Bloqueo REAL: cede la CPU via kernel_yield (int 0x81) y recién retorna con
-** el token adquirido. Esto permite llamarlo desde adentro del kernel
-** (pipe_read/pipe_write) con código después del wait. Semántica Mesa: al
-** despertar re-chequea value, porque otro proceso pudo ganarle el token. */
+** el token en su poder, que sem_post le entrega directamente. Esto permite
+** llamarlo desde adentro del kernel (pipe_read/pipe_write) con código después
+** del wait. Retorna 0 con el token, o -1 si el semáforo no existe o se destruyó
+** mientras esperaba. */
 int64_t sem_wait(const char *name) {
     if (!name) return -1;
 
-    while (1) {
-        acquire(&sem_lock);
+    acquire(&sem_lock);
 
-        Semaphore *s = find_sem(name);
-        if (!s) {
-            release(&sem_lock);
-            return -1;
-        }
-
-        if (s->value > 0) {
-            s->value--;
-            release(&sem_lock);
-            return 0;   /* recién acá el recurso está adquirido */
-        }
-
-        PCB *cur = process_current();
-        if (cur == NULL) {
-            release(&sem_lock);
-            return -1;
-        }
-        queue_push(s, cur->pid);
-        process_block(cur->pid);
-
-        /* Soltar el lock ANTES de ceder la CPU (nadie puede correr en el
-        ** medio: las syscalls corren con IF=0). Duerme acá hasta que un
-        ** sem_post lo desencole y el scheduler lo re-elija. */
+    Semaphore *s = find_sem(name);
+    if (!s) {
         release(&sem_lock);
+        return -1;
+    }
+
+    if (s->value > 0) {
+        s->value--;
+        release(&sem_lock);
+        return 0;
+    }
+
+    PCB *cur = process_current();
+    if (cur == NULL) {
+        release(&sem_lock);
+        return -1;
+    }
+
+    queue_push(s, cur->pid);
+    cur->sem_slot = (int)(s - sem_table);
+    cur->sem_wait = SEM_WAIT_PENDING;
+    process_block(cur->pid);
+
+    /* Soltar el lock ANTES de ceder la CPU (nadie puede correr en el medio: las
+    ** syscalls corren con IF=0). Duerme acá hasta que un sem_post le entregue
+    ** el token. Si lo despertaron sin token (sys_unblock o el comando block),
+    ** sigue en la cola y vuelve a dormirse: no puede entrar sin el token. */
+    release(&sem_lock);
+    kernel_yield();
+    while (cur->sem_wait == SEM_WAIT_PENDING) {
+        process_block(cur->pid);
         kernel_yield();
     }
+
+    int64_t result = (cur->sem_wait == SEM_WAIT_GRANTED) ? 0 : -1;
+    cur->sem_wait = SEM_WAIT_NONE;
+    return result;
 }
 
-/* Incrementa el semáforo; despierta un proceso en espera (que re-chequea). */
+/* Incrementa el semáforo o, si hay alguien esperando, le entrega el token. */
 int64_t sem_post(const char *name) {
     if (!name) return -1;
 
@@ -170,40 +216,15 @@ int64_t sem_post(const char *name) {
         return -1;
     }
 
-    s->value++;
-
-    if (s->wait_count > 0) {
-        uint64_t pid = queue_pop(s);
-        process_unblock(pid);
-    }
+    release_token(s);
 
     release(&sem_lock);
     return 0;
 }
 
-/* Despierta todos los procesos bloqueados en este semáforo. */
-int64_t sem_broadcast(const char *name) {
-    if (!name) return -1;
-
-    acquire(&sem_lock);
-
-    Semaphore *s = find_sem(name);
-    if (!s) {
-        release(&sem_lock);
-        return -1;
-    }
-
-    while (s->wait_count > 0) {
-        s->value++;
-        uint64_t pid = queue_pop(s);
-        process_unblock(pid);
-    }
-
-    release(&sem_lock);
-    return 0;
-}
-
-/* Decrementa el contador de usuarios; libera la entrada si llega a 0. */
+/* Decrementa el contador de usuarios; libera la entrada si llega a 0. Quien
+** siguiera esperando se despierta con error en lugar de quedar bloqueado para
+** siempre en un semáforo que ya no existe. */
 int64_t sem_close(const char *name) {
     if (!name) return -1;
 
@@ -217,13 +238,34 @@ int64_t sem_close(const char *name) {
 
     s->open_count--;
     if (s->open_count <= 0) {
+        while (s->wait_count > 0)
+            wake_first(s, SEM_WAIT_CLOSED);
         s->open_count = 0;
         s->name[0]    = '\0';
         s->wait_head  = 0;
         s->wait_tail  = 0;
-        s->wait_count = 0;
     }
 
     release(&sem_lock);
     return 0;
+}
+
+/* Un proceso que muere no puede seguir ocupando la cola: sem_post gastaria en
+** el su unico despertar y el siguiente quedaria bloqueado con un token libre.
+** Si ya le habian entregado el token pero no llego a usarlo, se devuelve para
+** que no se pierda. El token de un proceso muerto dentro de su seccion critica
+** (ya retorno de sem_wait) no se puede recuperar: el kernel no sabe que lo tiene. */
+void sem_cancel_wait(PCB *p) {
+    if (p->sem_wait == SEM_WAIT_NONE) return;
+
+    acquire(&sem_lock);
+
+    Semaphore *s = &sem_table[p->sem_slot];
+    if (p->sem_wait == SEM_WAIT_PENDING)
+        queue_remove(s, p->pid);
+    else if (p->sem_wait == SEM_WAIT_GRANTED && s->open_count > 0)
+        release_token(s);
+    p->sem_wait = SEM_WAIT_NONE;
+
+    release(&sem_lock);
 }
