@@ -14,7 +14,7 @@ El módulo de la Librería de Usuario ([[userland_lib.md|Userland Lib]]) es el e
 
 ## Internal Mechanics (¿Cómo funciona?)
 1. **Lógica de Entrada No Bloqueante a Nivel de Syscall:** A bajo nivel, la syscall `sys_read` sobre el teclado retorna `READ_RETRY` (-2) si no hay teclas disponibles en el buffer del Kernel (colocando al proceso a dormir). La librería de usuario abstrae esto en `getchar()` y `read_full()` mediante un ciclo ocupado:
-   `while((r = sys_read(&c, 1)) == READ_RETRY);`
+   `while((r = sys_read(STDIN, &c, 1)) == READ_RETRY);`
    Esto bloquea de forma limpia la ejecución del proceso de usuario hasta que el driver de teclado despierte al lector y retorne un byte válido o `0` (en caso de detectar Ctrl+D/EOF). Para los pipes, `sys_read` no retorna `READ_RETRY` ya que bloquea de forma interna en el Kernel usando semáforos.
 2. **Formateo de Salida (`print`):** Recibe un número indeterminado de argumentos mediante macros variádicas (`va_list`, `va_start`, `va_end`). Lee la cadena de formato carácter por carácter; al detectar `%` deriva la conversión del argumento leído:
    - Los enteros decimales o hexadecimales se formatean usando la función `num_to_str` y luego se imprimen por pantalla llamando de forma secuencial a `putchar`.

@@ -16,6 +16,8 @@ void red_main(int argc, char **argv);
 void loop_main(int argc, char **argv);
 void mvar_main(int argc, char **argv);
 void ps_main(int argc, char **argv);
+void nread_main(int argc, char **argv);
+void nwrite_main(int argc, char **argv);
 
 // ─── Builtins de la shell ─────────────────────────────────────────────────────
 void help(void);

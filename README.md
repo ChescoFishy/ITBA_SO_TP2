@@ -148,6 +148,8 @@ los de foreground antes de mostrar de nuevo el prompt.
 | `astdin` | — | Emite la letra `a` por stdout (útil con pipes). |
 | `red` | — | Imprime stdin en rojo. |
 | `test_pipe` | `[bytes]` | Test propio del grupo: productor y consumidor conectados por un pipe. |
+| `nread` | `<nombre>` | Abre el pipe nombrado para leer e imprime lo que llega hasta EOF. Espera a que haya un escritor. |
+| `nwrite` | `<nombre> [texto]` | Abre el pipe nombrado para escribir y le manda el texto o, si no hay texto, stdin. Espera a que haya un lector. |
 
 ### Tests de cátedra
 
@@ -173,6 +175,9 @@ Estos tests también son comandos de tipo *proceso*, por lo que admiten `&` y pu
 > cat | wc                  # escribir, terminar con Ctrl+D: imprime # de líneas
 > cat | filter              # escribir vocales: se reimprime sin vocales
 > mvar 2 2                  # 2 escritores y 2 lectores sobre la MVar
+> nread canal &             # espera en background a un escritor de "canal"
+> nwrite canal hola         # proceso no relacionado: el lector imprime "hola"
+> nread canal | filter      # un pipe nombrado combinado con un pipe de la shell
 > test_mm 1000000           # test de memoria en foreground
 > test_mm 1000000 &         # ídem en background
 > test_sync 2 100 1         # con semáforos: el valor final siempre es 0
@@ -228,6 +233,10 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 - **Pipes:** buffer circular protegido por tres semáforos (`data`, `space`, `mutex`).
   Leer o escribir es transparente porque stdin y stdout de cada proceso se resuelven a
   través de su PCB. La shell los asigna al crear al hijo, por eso no hace falta `dup2`.
+- **Pipes nombrados:** procesos no relacionados comparten un pipe acordando el nombre.
+  Como un FIFO de POSIX, cada proceso abre un solo extremo y `sys_pipe_open` bloquea
+  hasta que el otro extremo esté abierto, sin importar quién llegue primero. El kernel
+  registra los extremos abiertos en el PCB y los cierra si el proceso muere sin hacerlo.
 - **Builtins y procesos:** los comandos que deben ejecutarse sobre la shell son builtins.
   El resto son procesos, y por eso admiten `&` y `|`.
 
@@ -240,6 +249,10 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 - No existe `sys_dup2`: la shell conecta los pipes asignando stdin/stdout del
   hijo al crearlo (`sys_create_process_fd`).
 - La tabla de procesos tiene un máximo de `MAX_PROCESSES = 64` procesos simultáneos.
+- Un pipe usa tres semáforos de los 32 disponibles, así que entran como mucho 10 pipes
+  a la vez aunque la tabla admita `MAX_PIPES = 16`. Un proceso puede tener abiertos
+  hasta `MAX_PIPE_FDS = 8` extremos, y el nombre de un pipe admite hasta 15 caracteres.
+- Los datos de un pipe nombrado se pierden al cerrarse su último extremo.
 - Solo el **foreground** lee del teclado: un proceso de background que lee stdin
   recibe EOF. Por eso `cat &` termina de inmediato.
 - `idle` y `sh` no se pueden matar ni bloquear.
@@ -263,10 +276,14 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 - **Procesos cuyo entry retorna sin `sys_exit`:** el `ret` saltaba a basura porque el
   stack inicial no tiene dirección de retorno. Todo proceso arranca en un trampolín que
   llama al entry y luego termina el proceso.
-- **Carrera en EOF y broken pipe:** un lector o escritor podía bloquearse justo después
-  de comprobar que el otro extremo se había cerrado. Al cerrarse el último extremo se
-  postea el semáforo `MAX_PROCESSES` veces para despertar a los bloqueados y a los que
-  lleguen después.
+- **Bytes fantasma al reabrir un pipe nombrado:** al cerrarse el último extremo se
+  posteaba el semáforo `MAX_PROCESSES` veces para despertar a los bloqueados. Esos tokens
+  quedaban para siempre, y al reabrir el pipe un lector recibía bytes que nadie escribió.
+  Ahora `sem_wake_all` despierta sin entregar tokens, y cada semáforo cuenta exactamente
+  los bytes o los lugares libres.
+- **Rendezvous de pipes nombrados:** un escritor podía abrir, escribir y cerrar antes de
+  que volviera a correr el lector que lo esperaba, que veía cero escritores y se volvía
+  a dormir. La espera también mira cuántas aperturas hubo, igual que Linux.
 - **Fuga de slots de procesos:** los procesos terminados que nadie esperaba ocupaban la
   tabla hasta llenarla. Se agregaron la liberación del slot cuando el padre ya no puede
   esperar, y `sys_detach` para los procesos de background.

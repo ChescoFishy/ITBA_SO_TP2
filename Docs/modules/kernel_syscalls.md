@@ -30,8 +30,8 @@ El módulo de Llamadas al Sistema ([[kernel_syscalls.md|Syscalls]]) es la API qu
 * **Catálogo Completo de Syscalls (0-38):**
   - **0: `sys_registers`:** Copia el volcado de registros tomado al presionar `L_CONTROL`.
   - **1: `sys_time` / 2: `sys_date`:** Devuelven la hora y fecha actual del RTC en BCD.
-  - **3: `sys_read`:** Lee desde el teclado o un pipe. Devuelve `READ_RETRY` (-2) si bloquea.
-  - **4: `sys_write` / 37: `sys_write_color`:** Escribe texto en la consola gráfica o en un pipe (con o sin color).
+  - **3: `sys_read(fd, buff, count)`:** Lee de stdin (teclado o pipe) o de un extremo de pipe abierto por el proceso. Devuelve `READ_RETRY` (-2) si bloquea esperando teclado y `-1` si el fd no es válido.
+  - **4: `sys_write` / 37: `sys_write_color`:** Escribe texto en la consola gráfica o en un pipe (con o sin color). Devuelve `-1` sobre un extremo de pipe que el proceso no tiene abierto o si no quedan lectores.
   - **5: `sys_increase_fontsize` / 6: `sys_decrease_fontsize`:** Ajusta el tamaño de la letra de la consola.
   - **7: `sys_beep`:** Genera un pitido monofónico bloqueante.
   - **8: `sys_ticks`:** Retorna la cantidad de ticks acumulados del timer.
@@ -54,7 +54,7 @@ El módulo de Llamadas al Sistema ([[kernel_syscalls.md|Syscalls]]) es la API qu
   - **29: `sys_sem_open` / 32: `sys_sem_close`:** Creación/apertura y cierre de semáforos nombrados.
   - **30: `sys_sem_wait` / 31: `sys_sem_post`:** Operaciones de sincronización sobre semáforos.
   - **33: `sys_pipe` / 34: `sys_pipe_close`:** Creación y destrucción de pipes anónimos.
-  - **36: `sys_pipe_open`:** Creación o apertura de pipes nombrados compartidos.
+  - **36: `sys_pipe_open(name, mode)`:** Abre un extremo de un pipe nombrado, creándolo si no existe, y bloquea hasta que el otro extremo esté abierto. Devuelve el fd o `-1`.
   - **38: `sys_set_cursor`:** Controla la visibilidad del cursor parpadeante en consola.
 
 ## System Calls Relacionadas

@@ -46,14 +46,25 @@ void sys_set_cursor(uint64_t on){
     videoCursorSet(on != 0);
 }
 
-/* sys_write: el fd logico (0=stdin, 1=stdout) se mapea a traves del PCB.
-** Si el fd fisico es un pipe, se redirige; si no, va a la consola. */
-uint64_t sys_write(uint64_t fd, const char * buff, uint64_t count){
+/* 1 si fd es un extremo de pipe que el proceso tiene abierto. */
+static int is_held_pipe(const PCB *cur, uint64_t fd) {
+    return cur != NULL && fd < 0x10000 && pipe_is_fd((int)fd) && process_holds_pipe(cur, (int)fd);
+}
+
+/* fd fisico donde escribir: 0 y 1 se mapean a traves del PCB, un extremo de pipe
+** abierto por el proceso se usa directo y el resto va a la consola. Devuelve -1 si
+** es un extremo de pipe que el proceso no tiene abierto. */
+static int write_target(uint64_t fd) {
     PCB *cur = process_current();
-    int phys_fd = 1;  /* default: consola */
-    if (cur != NULL && fd < 2) {
-        phys_fd = cur->fd[fd];
-    }
+    if (cur != NULL && fd < 2) return cur->fd[fd];
+    if (is_held_pipe(cur, fd)) return (int)fd;
+    return (fd < 0x10000 && pipe_is_fd((int)fd)) ? -1 : 1;
+}
+
+/* sys_write: si el fd fisico es un pipe, se redirige; si no, va a la consola. */
+uint64_t sys_write(uint64_t fd, const char * buff, uint64_t count){
+    int phys_fd = write_target(fd);
+    if (phys_fd < 0) return (uint64_t)-1;
 
     if (pipe_is_fd(phys_fd)) {
         int64_t n = pipe_write(phys_fd, buff, count);
@@ -71,11 +82,8 @@ uint64_t sys_write(uint64_t fd, const char * buff, uint64_t count){
 ** consola. Si el fd fisico es un pipe el color se ignora (los bytes viajan crudos),
 ** asi un comando coloreado (ej. red) sigue funcionando encadenado por pipe. */
 uint64_t sys_write_color(uint64_t fd, const char * buff, uint64_t count, uint32_t color){
-    PCB *cur = process_current();
-    int phys_fd = 1;  /* default: consola */
-    if (cur != NULL && fd < 2) {
-        phys_fd = cur->fd[fd];
-    }
+    int phys_fd = write_target(fd);
+    if (phys_fd < 0) return (uint64_t)-1;
 
     if (pipe_is_fd(phys_fd)) {
         int64_t n = pipe_write(phys_fd, buff, count);
@@ -94,15 +102,23 @@ uint64_t sys_write_color(uint64_t fd, const char * buff, uint64_t count, uint32_
 ** teclado (reintento) como con pipes (0 = EOF) usando el mismo bucle. */
 #define SYS_READ_RETRY ((uint64_t)-2)
 
-/* sys_read: usa el fd[0] del PCB. Si es pipe, bloquea via semaforo del pipe y
-** devuelve datos (>0) o 0 en EOF. Si es teclado (0): devuelve datos si hay,
+/* sys_read: fd 0 es stdin, que se mapea a traves del PCB; tambien acepta un extremo
+** de pipe abierto por el proceso. Cualquier otro fd devuelve -1. Si es pipe, bloquea
+** via semaforo del pipe y devuelve datos (>0) o 0 en EOF. Si es teclado (0): devuelve datos si hay,
 ** 0 en EOF (Ctrl+D), o SYS_READ_RETRY tras bloquear el proceso (sin datos).
 ** El proceso se despierta cuando llega una tecla y reintenta desde userland.
 ** El teclado es del foreground: un proceso de background recibe EOF, sino le
 ** robaria la entrada a la shell y la dejaria esperando para siempre. */
-uint64_t sys_read(char * buff, uint64_t count){
+uint64_t sys_read(uint64_t fd, char * buff, uint64_t count){
     PCB *cur = process_current();
-    int phys_fd = (cur != NULL) ? cur->fd[0] : 0;
+    int phys_fd;
+    if (fd == 0) {
+        phys_fd = (cur != NULL) ? cur->fd[0] : 0;
+    } else if (is_held_pipe(cur, fd)) {
+        phys_fd = (int)fd;
+    } else {
+        return (uint64_t)-1;
+    }
 
     if (pipe_is_fd(phys_fd)) {
         int64_t n = pipe_read(phys_fd, buff, count);
@@ -279,10 +295,28 @@ int64_t sys_sem_close(const char *name) {
 // ─── Syscalls de pipes (33-35) ────────────────────────────────────────────────
 
 int64_t sys_pipe(uint64_t fds) {
-    return (int64_t)pipe_create((int *)fds);
+    PCB *cur = process_current();
+    int *ends = (int *)fds;
+    if (pipe_create(ends) < 0) return -1;
+
+    if (process_track_pipe(cur, ends[0]) < 0) {
+        pipe_close(ends[0]);
+        pipe_close(ends[1]);
+        return -1;
+    }
+    if (process_track_pipe(cur, ends[1]) < 0) {
+        process_untrack_pipe(cur, ends[0]);
+        pipe_close(ends[0]);
+        pipe_close(ends[1]);
+        return -1;
+    }
+    return 0;
 }
 
+/* Solo se cierra lo que el proceso abrio. Su stdin/stdout los cierra el kernel al
+** terminar: cerrarlos aca le restaria un extremo al pipe dos veces. */
 int64_t sys_pipe_close(uint64_t fd) {
+    if (process_untrack_pipe(process_current(), (int)fd) < 0) return -1;
     return (int64_t)pipe_close((int)fd);
 }
 
@@ -301,9 +335,19 @@ int64_t sys_create_process_fd(uint64_t name, uint64_t entry,
                                       fg, fd_in, fd_out);
 }
 
-/* Abre (o crea) un pipe nombrado. Retorna 0 en exito. */
-int64_t sys_pipe_open(const char *name, uint64_t fds) {
-    return (int64_t)pipe_open(name, (int *)fds);
+/* Abre un extremo de un pipe nombrado (lo crea si no existe) y bloquea hasta que el
+** otro extremo este abierto. Devuelve el fd, o -1 si falla. El fd se registra antes
+** de bloquearse: si matan al proceso mientras espera, el kernel lo cierra. */
+int64_t sys_pipe_open(const char *name, uint64_t mode) {
+    int fd = pipe_open(name, (int)mode);
+    if (fd < 0) return -1;
+
+    if (process_track_pipe(process_current(), fd) < 0) {
+        pipe_close(fd);
+        return -1;
+    }
+    pipe_wait_peer(fd);
+    return fd;
 }
 
 int64_t sys_detach(uint64_t pid) {

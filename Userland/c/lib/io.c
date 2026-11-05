@@ -17,7 +17,7 @@ char getchar(){
     char c;
     uint64_t r;
     /* Reintentar mientras el teclado bloquee; devolver 0 en EOF (Ctrl+D). */
-    while((r = sys_read(&c, 1)) == READ_RETRY)
+    while((r = sys_read(STDIN, &c, 1)) == READ_RETRY)
         ;
     return (r >= 1) ? c : 0;
 }
@@ -28,7 +28,7 @@ char getchar(){
 ** Compartido por los comandos cat/wc/filter (ver commands/commands.h). */
 uint64_t read_full(char *buf, uint64_t n){
     uint64_t r;
-    while((r = sys_read(buf, n)) == READ_RETRY)
+    while((r = sys_read(STDIN, buf, n)) == READ_RETRY)
         ;
     return r;
 }

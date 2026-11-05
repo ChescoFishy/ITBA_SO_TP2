@@ -17,6 +17,7 @@
 ** Centralizados en commands.h; la fachada los reexporta por compatibilidad. */
 #include "commands/commands.h"
 
+#define STDIN  0
 #define STDOUT 1
 #define STDERR 2
 #define REGSBUFF 500
@@ -66,7 +67,7 @@ typedef struct {
 // ─── Syscalls de IO ───────────────────────────────────────────────────────────
 uint64_t sys_write(uint64_t fd, const char * buff, uint64_t count);
 uint64_t sys_write_color(uint64_t fd, const char * buff, uint64_t count, uint32_t color);
-uint64_t sys_read(char * buff, uint64_t count);
+uint64_t sys_read(uint64_t fd, char * buff, uint64_t count);
 uint64_t sys_registers(char * buff);
 void sys_time(uint8_t * buff);
 void sys_date(uint8_t * buff);
@@ -116,7 +117,12 @@ int64_t  sys_sem_close(const char *name);
 // ─── Syscalls de pipes ────────────────────────────────────────────────────────
 int64_t  sys_pipe(int fds[2]);
 int64_t  sys_pipe_close(int fd);
-int64_t  sys_pipe_open(const char *name, int fds[2]);
+/* Abre un extremo de un pipe nombrado, creandolo si no existe: procesos no relacionados
+** lo comparten acordando el nombre. Bloquea hasta que el otro extremo este abierto.
+** Devuelve un fd para sys_read/sys_write/sys_pipe_close, o -1 si falla. */
+#define PIPE_READ  0
+#define PIPE_WRITE 1
+int64_t  sys_pipe_open(const char *name, int mode);
 /* fg_fdin_fdout: bits[0:7]=fg, bits[16:31]=fd_in, bits[32:47]=fd_out */
 int64_t  sys_create_process_fd(const char *name, void *entry,
                                int argc, char **argv,

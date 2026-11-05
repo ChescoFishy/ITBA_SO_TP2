@@ -60,6 +60,7 @@ Al crear un proceso (`process_create_fd`):
         uint64_t *stack_base;       /* Dirección base del stack asignado */
         uint8_t foreground;         /* 1 si corre en fg, 0 si corre en bg */
         int fd[2];                  /* Descriptores redireccionados a pipes/consola */
+        int pipe_fds[MAX_PIPE_FDS]; /* Extremos abiertos con sys_pipe/sys_pipe_open; el kernel los cierra al terminar */
         uint64_t parent_pid;        /* PID del proceso creador */
         uint64_t waiting_for;       /* PID que está esperando en waitpid */
         int argc; char **argv;      /* Argumentos */

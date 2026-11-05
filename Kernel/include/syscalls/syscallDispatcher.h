@@ -8,7 +8,7 @@ extern void * syscalls[CANT_SYS];
 
 // Syscalls 0-18 (existentes)
 uint64_t sys_write(uint64_t fd, const char * buff, uint64_t count);
-uint64_t sys_read(char * buff, uint64_t count);
+uint64_t sys_read(uint64_t fd, char * buff, uint64_t count);
 uint64_t sys_registers(char * buff);
 void sys_time(uint8_t * buff);
 void sys_date(uint8_t * buff);
@@ -54,7 +54,7 @@ int64_t  sys_create_process_fd(uint64_t name, uint64_t entry,
                                uint64_t fg_fdin_fdout);
 
 // Syscalls 36 (pipes nombrados)
-int64_t  sys_pipe_open(const char *name, uint64_t fds);
+int64_t  sys_pipe_open(const char *name, uint64_t mode);
 
 // Syscall 37 (escritura con color)
 uint64_t sys_write_color(uint64_t fd, const char * buff, uint64_t count, uint32_t color);

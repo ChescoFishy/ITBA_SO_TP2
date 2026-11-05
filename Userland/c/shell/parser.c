@@ -49,6 +49,8 @@ Command commands[] = {
     {"loop",      0,        loop_main,       "[ticks]   imprime su PID periodicamente"},
     {"mvar",      0,        mvar_main,       "<w> <r>   demo MVar lectores/escritores"},
     {"ps",        0,        ps_main,         "lista los procesos activos"},
+    {"nread",     0,        nread_main,      "<nombre>  imprime lo que llega al pipe nombrado"},
+    {"nwrite",    0,        nwrite_main,     "<nombre> [texto] escribe texto o stdin al pipe nombrado"},
     {0, 0, 0, 0},
 };
 

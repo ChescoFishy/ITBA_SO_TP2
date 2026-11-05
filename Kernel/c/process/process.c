@@ -170,6 +170,9 @@ int process_create_fd(const char *name, ProcessEntry entry, int argc, char **arg
     p->foreground = fg;
     p->fd[0] = fd_in;
     p->fd[1] = fd_out;
+    for(int i = 0; i < MAX_PIPE_FDS; i++){
+        p->pipe_fds[i] = 0;
+    }
     /* Heredar refcount de pipes: el padre creó/abrió el pipe y le pasó el fd
     ** al hijo. Bumpeamos para que el cierre del padre no libere el pipe antes
     ** de que el hijo termine de usarlo. */
@@ -223,6 +226,44 @@ static void close_process_pipes(PCB *p){
             p->fd[i] = -1;
         }
     }
+    for(int i = 0; i < MAX_PIPE_FDS; i++){
+        if(p->pipe_fds[i] != 0){
+            pipe_close(p->pipe_fds[i]);
+            p->pipe_fds[i] = 0;
+        }
+    }
+}
+
+int process_track_pipe(PCB *p, int fd){
+    for(int i = 0; i < MAX_PIPE_FDS; i++){
+        if(p->pipe_fds[i] == 0){
+            p->pipe_fds[i] = fd;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int process_untrack_pipe(PCB *p, int fd){
+    for(int i = 0; i < MAX_PIPE_FDS; i++){
+        if(p->pipe_fds[i] == fd){
+            p->pipe_fds[i] = 0;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int process_holds_pipe(const PCB *p, int fd){
+    if(p->fd[0] == fd || p->fd[1] == fd){
+        return 1;
+    }
+    for(int i = 0; i < MAX_PIPE_FDS; i++){
+        if(p->pipe_fds[i] == fd){
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* parent->rsp apunta al slot R15; el slot RAX esta 14 qwords mas arriba.

@@ -10,6 +10,7 @@
 #define MIN_PRIORITY 1
 #define MAX_PRIORITY 5
 #define DEFAULT_PRIORITY 3
+#define MAX_PIPE_FDS 8           // Extremos de pipe que un proceso puede tener abiertos
 
 typedef enum {
     PROCESS_FREE = 0,
@@ -24,7 +25,7 @@ typedef enum {
     SEM_WAIT_NONE = 0,  /* No esta esperando ningun semaforo */
     SEM_WAIT_PENDING,   /* En la cola, todavia sin token */
     SEM_WAIT_GRANTED,   /* sem_post ya le entrego el token, falta que corra */
-    SEM_WAIT_CLOSED     /* El semaforo se destruyo mientras esperaba */
+    SEM_WAIT_NO_TOKEN   /* Lo despertaron sin token: sem_close o sem_wake_all */
 } SemWaitStatus;
 
 typedef void (*ProcessEntry)(int argc, char **argv);
@@ -40,6 +41,7 @@ typedef struct PCB{
     uint64_t *stack_base;       /* base del stack mm_malloc (para liberar) */
     uint8_t foreground;         /* Indica si el proceso es foreground (1) o background (0). */
     int fd[2];                  /* fd[0]=stdin, fd[1]=stdout */
+    int pipe_fds[MAX_PIPE_FDS]; /* Extremos abiertos con sys_pipe/sys_pipe_open (0 = libre) */
     uint64_t parent_pid;        /* PID del proceso padre (0 si no tiene padre) */
     uint64_t waiting_for;       /* PID esperado en waitpid (0 = no espera) */   
     int argc;                   /* Cantidad de argumentos (para pasar a la función entry) */
@@ -81,6 +83,14 @@ int process_waitpid(uint64_t pid);
 ** caso el argv sigue siendo responsabilidad del llamante. */
 int process_detach(uint64_t pid);
 uint64_t process_ps(ProcessInfo *buf, uint64_t max);
+
+/* Extremos de pipe que el proceso abrio y debe cerrar el kernel si muere sin hacerlo.
+** process_track_pipe devuelve -1 si no hay lugar; process_untrack_pipe, si no lo tenia. */
+int process_track_pipe(PCB *p, int fd);
+int process_untrack_pipe(PCB *p, int fd);
+
+/* 1 si el proceso puede usar ese extremo: lo abrio o es su stdin/stdout. */
+int process_holds_pipe(const PCB *p, int fd);
 
 /* Devuelve el PID del ultimo proceso foreground creado por la shell.
 ** 0 si no hay ninguno vivo. Lo usa el driver de teclado para Ctrl+C. */

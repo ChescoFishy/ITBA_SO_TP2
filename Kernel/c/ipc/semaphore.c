@@ -158,8 +158,8 @@ int64_t sem_open(const char *name, uint64_t initial_value) {
 ** Bloqueo REAL: cede la CPU via kernel_yield (int 0x81) y recién retorna con
 ** el token en su poder, que sem_post le entrega directamente. Esto permite
 ** llamarlo desde adentro del kernel (pipe_read/pipe_write) con código después
-** del wait. Retorna 0 con el token, o -1 si el semáforo no existe o se destruyó
-** mientras esperaba. */
+** del wait. Retorna 0 con el token, o -1 si el semáforo no existe o lo despertaron
+** sin token (se destruyó mientras esperaba, o sem_wake_all). */
 int64_t sem_wait(const char *name) {
     if (!name) return -1;
 
@@ -239,12 +239,33 @@ int64_t sem_close(const char *name) {
     s->open_count--;
     if (s->open_count <= 0) {
         while (s->wait_count > 0)
-            wake_first(s, SEM_WAIT_CLOSED);
+            wake_first(s, SEM_WAIT_NO_TOKEN);
         s->open_count = 0;
         s->name[0]    = '\0';
         s->wait_head  = 0;
         s->wait_tail  = 0;
     }
+
+    release(&sem_lock);
+    return 0;
+}
+
+/* Despierta a toda la cola sin entregar tokens: el valor sigue contando lo mismo y
+** cada sem_wait devuelve -1. Sirve para avisar un cambio ajeno al contador, como que
+** se cerro el otro extremo de un pipe; quien despierta debe revisar su condicion. */
+int64_t sem_wake_all(const char *name) {
+    if (!name) return -1;
+
+    acquire(&sem_lock);
+
+    Semaphore *s = find_sem(name);
+    if (!s) {
+        release(&sem_lock);
+        return -1;
+    }
+
+    while (s->wait_count > 0)
+        wake_first(s, SEM_WAIT_NO_TOKEN);
 
     release(&sem_lock);
     return 0;

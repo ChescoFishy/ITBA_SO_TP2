@@ -28,7 +28,7 @@ void shellReadLine(char * buffer, uint64_t max){
     uint32_t idx = 0;
 
     while(1){
-        if(sys_read(&c, 1) != 1){
+        if(sys_read(STDIN, &c, 1) != 1){
             continue; // READ_RETRY: el proceso durmió esperando una tecla
         }
 
