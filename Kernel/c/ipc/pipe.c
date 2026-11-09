@@ -50,8 +50,7 @@ static void str_copy_n(char *dst, const char *src, int max) {
     dst[i] = '\0';
 }
 
-/* Un nombre vacio se confundiria con los pipes anonimos y uno que no entra se
-** truncaria, y dos nombres distintos terminarian en el mismo pipe. */
+/* Evita nombres vacios o truncados que puedan generar conflictos. */
 static int name_is_valid(const char *name) {
     if (!name || !name[0]) return 0;
     int len = 0;
@@ -71,8 +70,7 @@ static int fd_is_write(int fd) {
     return fd >= PIPE_FD_WRITE_BASE && fd < PIPE_FD_WRITE_BASE + MAX_PIPES;
 }
 
-/* Reserva un slot libre con sus semaforos, sin extremos abiertos: los cuenta quien
-** lo pidio. Devuelve el indice, o -1 si no quedan slots o semaforos. */
+/* Reserva un pipe y sus semáforos, sin extremos abiertos. */
 static int pipe_alloc(void) {
     int i;
     for (i = 0; i < MAX_PIPES; i++) {
@@ -108,9 +106,7 @@ static int pipe_alloc(void) {
     return i;
 }
 
-/* Espera un token de datos. Devuelve 1 con el token (hay un byte para leer), o 0 en
-** EOF. sem_wait devuelve -1 cuando lo despierta un cierre, sin token: toca revisar
-** de nuevo, porque quizas ya llego otro escritor (pipe nombrado). */
+/* Espera un token de datos o devuelve EOF si no quedan escritores. */
 static int wait_for_data(Pipe *p) {
     while (p->count > 0 || p->writers > 0) {
         if (sem_wait(p->data_sem) == 0) return 1;
@@ -118,8 +114,7 @@ static int wait_for_data(Pipe *p) {
     return 0;
 }
 
-/* Espera un token de espacio. Devuelve 1 con el token (hay lugar para un byte), o 0
-** si no quedan lectores. */
+/* Espera un token de espacio o devuelve 0 si no quedan lectores. */
 static int wait_for_space(Pipe *p) {
     while (p->readers > 0) {
         if (sem_wait(p->space_sem) != 0) continue;
@@ -149,8 +144,7 @@ int pipe_is_fd(int fd) {
     return fd_to_index(fd) >= 0;
 }
 
-/* Cuando un proceso hijo hereda un extremo del pipe via process_create_fd,
-** bumpear el contador correspondiente. Simétrico a pipe_close. */
+/* Incrementa los extremos heredados por un proceso hijo. */
 int pipe_inherit_fd(int fd) {
     int idx = fd_to_index(fd);
     if (idx < 0) return -1;
@@ -175,9 +169,7 @@ int pipe_create(int fds[2]) {
     return 0;
 }
 
-/* Abre un extremo del pipe nombrado, creandolo si no existe. Procesos no
-** relacionados lo comparten acordando el mismo nombre a priori. Devuelve el fd, o
-** -1 si el nombre o el modo no son validos o no quedan pipes. */
+/* Abre o crea un pipe nombrado y devuelve el fd correspondiente. */
 int pipe_open(const char *name, int mode) {
     if (!name_is_valid(name)) return -1;
     if (mode != PIPE_OPEN_READ && mode != PIPE_OPEN_WRITE) return -1;
@@ -204,12 +196,7 @@ int pipe_open(const char *name, int mode) {
     return (mode == PIPE_OPEN_WRITE) ? PIPE_FD_WRITE_BASE + i : PIPE_FD_READ_BASE + i;
 }
 
-/* Bloquea hasta que el pipe tenga abierto el extremo opuesto a fd, como un FIFO de
-** POSIX. Sin esto, un escritor que llega antes que el lector veria un pipe roto, y
-** un lector que llega antes que el escritor veria EOF. Debe llamarse justo despues
-** de pipe_open. Ademas de los extremos abiertos mira las aperturas: el otro proceso
-** pudo abrir, escribir y cerrar antes de que este vuelva a correr, y sus datos
-** siguen en el buffer. */
+/* Espera la apertura del extremo opuesto. Considera aperturas previas para evitar esperas innecesarias. */
 void pipe_wait_peer(int fd) {
     int idx = fd_to_index(fd);
     if (idx < 0) return;
@@ -230,9 +217,8 @@ int pipe_close(int fd) {
     Pipe *p = &pipes[idx];
     if (!p->in_use) return -1;
 
-    /* El ultimo en irse despierta a los bloqueados del otro lado, que van a ver
-    ** EOF o pipe roto. Sin entregar tokens: siguen contando bytes y lugares libres
-    ** aunque otro proceso vuelva a abrir el pipe. */
+    /* Despierta a los bloqueados cuando se cierra el ultimo extremo,
+   sin alterar los tokens de datos o espacio. */
     if (fd_is_write(fd)) {
         if (p->writers > 0) p->writers--;
         if (p->writers == 0) sem_wake_all(p->data_sem);
@@ -270,11 +256,9 @@ int64_t pipe_read(int fd, char *buf, uint64_t n) {
 
         sem_post(p->space_sem);
 
-        /* leemos byte a byte hasta n, pero si el buffer queda vacío
-           devolvemos lo leído sin bloquear (semántica POSIX). */
+        /* Devuelve los bytes leidos sin esperar nuevos datos. */
         if (p->count == 0) {
-            /* Otro lector pudo bloquearse viendo este ultimo byte, ya reservado
-            ** para nosotros: sin escritores, nadie mas va a despertarlo. */
+            /* Despierta lectores bloqueados si no quedan datos ni escritores. */
             if (p->writers == 0) sem_wake_all(p->data_sem);
             return (int64_t)read;
         }

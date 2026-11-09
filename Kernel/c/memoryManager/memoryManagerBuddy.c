@@ -1,17 +1,12 @@
-/* 
-** Header (8 bytes) -> metadata interna del allocator. 
-** Payload -> espacio util para el usuario. Siguen inmediatamente despues del header.
-** El bloque completo (header + payload) es potencia de 2.
-*/
+/* Cada bloque tiene un header de 8 bytes seguido del payload.
+   El tamaño total del bloque es potencia de 2. */
 
 #include "memoryManager/memoryManager.h"
 #include <stddef.h>
 
-#define MIN_ORDER 4     /* 2^4 = 16 bytes (8B header + 8B payload minimo) */ 
-#define MAX_ORDER 23    /* 2^23 = 8 MB */ 
-
-/* Numero total de bloques distintos disponibles para Buddy. */
-#define ORDERS (MAX_ORDER - MIN_ORDER + 1)  
+#define MIN_ORDER 4   /* Bloque mínimo: 16 bytes */
+#define MAX_ORDER 23  /* Bloque máximo: 8 MB */
+#define ORDERS (MAX_ORDER - MIN_ORDER + 1)
 
 /* 
 ** Header presente en TODOS los bloques de Buddy (libres y asignados).
@@ -85,10 +80,8 @@ static void list_remove(int order, FreeNode *target){
     }
 }
 
-/* 
-** Inicializa Buddy System. Setea el heap y lo descompone en bloques de potencia de 2. 
-** Greedy: se asignan bloques del mayor order posible, luego se splitean hacia abajo.
-*/
+/* Inicializa el heap dividiéndolo en bloques de potencia de 2,
+   comenzando por los de mayor tamaño. */
 void mm_init(void *start, uint64_t size){
     heap_base = start;
     heap_total = size;
@@ -211,9 +204,8 @@ void mm_free(void *ptr){
 }
 
 
-/* Recorre el heap bloque a bloque liberando los del proceso. El fin del bloque se
-** calcula antes de liberarlo. Si mm_free lo fusiona con el buddy siguiente, el
-** header de ese buddy queda intacto (libre y con su order) y el recorrido sigue. */
+/* Libera los bloques del proceso.
+   Calcula el siguiente bloque antes de liberar para permitir fusiones. */
 void mm_free_owned(uint64_t owner){
     uintptr_t offset = 0;
 

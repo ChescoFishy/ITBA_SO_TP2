@@ -4,16 +4,12 @@
 #include "interrupts/interrupts.h"
 #include <stddef.h>
 
-/* Primitivas atomicas (xchg) definidas en libasm.asm. Protegen el acceso al
-** valor del semaforo contra race conditions, segun pide el enunciado. */
+/* Operaciones atomicas para proteger el acceso a los semaforos. */
 extern void acquire(uint64_t *lock);
 extern void release(uint64_t *lock);
 
-/* Un unico lock global protege toda la tabla de semaforos. Las syscalls corren
-** con IF=0 (int 0x80 es un interrupt gate) y lo sueltan antes de ceder la CPU,
-** asi que nunca esta tomado con interrupciones habilitadas. Por eso el Ctrl+C
-** del teclado, que puede llegar aca via process_kill, no puede encontrarlo
-** tomado: no hay riesgo de deadlock por reentrancia. */
+/* Lock global de la tabla. Se libera antes de ceder la CPU.
+   Las syscalls ejecutan con IF=0, evitando reentrancia por interrupciones. */
 static uint64_t sem_lock = 0;
 
 #define MAX_SEMS     32
@@ -91,9 +87,8 @@ static void wake_first(Semaphore *s, SemWaitStatus status) {
     }
 }
 
-/* Entrega el token: si hay alguien esperando se lo pasa directamente, sin que
-** value suba. Asi ningun proceso que llegue despues puede ganarle el token a
-** los que ya estan en la cola (FIFO), lo que evita la inanicion. */
+/* Entrega el token al primer proceso bloqueado o incrementa value.
+   Respeta el orden FIFO y evita que nuevos procesos se adelanten. */
 static void release_token(Semaphore *s) {
     if (s->wait_count > 0)
         wake_first(s, SEM_WAIT_GRANTED);
@@ -154,12 +149,8 @@ int64_t sem_open(const char *name, uint64_t initial_value) {
     return 1;
 }
 
-/* Decrementa el semáforo; bloquea el proceso actual si no hay tokens.
-** Bloqueo REAL: cede la CPU via kernel_yield (int 0x81) y recién retorna con
-** el token en su poder, que sem_post le entrega directamente. Esto permite
-** llamarlo desde adentro del kernel (pipe_read/pipe_write) con código después
-** del wait. Retorna 0 con el token, o -1 si el semáforo no existe o lo despertaron
-** sin token (se destruyó mientras esperaba, o sem_wake_all). */
+/* Consume un token o bloquea el proceso hasta recibirlo.
+   Retorna 0 si obtiene el token y -1 si falla o despierta sin token. */
 int64_t sem_wait(const char *name) {
     if (!name) return -1;
 
@@ -188,10 +179,7 @@ int64_t sem_wait(const char *name) {
     cur->sem_wait = SEM_WAIT_PENDING;
     process_block(cur->pid);
 
-    /* Soltar el lock ANTES de ceder la CPU (nadie puede correr en el medio: las
-    ** syscalls corren con IF=0). Duerme acá hasta que un sem_post le entregue
-    ** el token. Si lo despertaron sin token (sys_unblock o el comando block),
-    ** sigue en la cola y vuelve a dormirse: no puede entrar sin el token. */
+    /* Libera el lock antes de ceder la CPU. Si despierta sin recibir un token, vuelve a bloquearse. */
     release(&sem_lock);
     kernel_yield();
     while (cur->sem_wait == SEM_WAIT_PENDING) {
@@ -222,9 +210,8 @@ int64_t sem_post(const char *name) {
     return 0;
 }
 
-/* Decrementa el contador de usuarios; libera la entrada si llega a 0. Quien
-** siguiera esperando se despierta con error en lugar de quedar bloqueado para
-** siempre en un semáforo que ya no existe. */
+/* Reduce las referencias al semáforo. Si llega a 0, lo libera
+   y despierta con error a los procesos que siguen esperando. */
 int64_t sem_close(const char *name) {
     if (!name) return -1;
 
@@ -250,9 +237,8 @@ int64_t sem_close(const char *name) {
     return 0;
 }
 
-/* Despierta a toda la cola sin entregar tokens: el valor sigue contando lo mismo y
-** cada sem_wait devuelve -1. Sirve para avisar un cambio ajeno al contador, como que
-** se cerro el otro extremo de un pipe; quien despierta debe revisar su condicion. */
+/* Despierta a todos sin entregar tokens ni modificar value.
+   Permite notificar cambios, como el cierre de un pipe. */
 int64_t sem_wake_all(const char *name) {
     if (!name) return -1;
 
@@ -271,11 +257,9 @@ int64_t sem_wake_all(const char *name) {
     return 0;
 }
 
-/* Un proceso que muere no puede seguir ocupando la cola: sem_post gastaria en
-** el su unico despertar y el siguiente quedaria bloqueado con un token libre.
-** Si ya le habian entregado el token pero no llego a usarlo, se devuelve para
-** que no se pierda. El token de un proceso muerto dentro de su seccion critica
-** (ya retorno de sem_wait) no se puede recuperar: el kernel no sabe que lo tiene. */
+/* Elimina de la cola a un proceso terminado y recupera su token
+   si lo recibió pero todavía no salió de sem_wait.
+   No recupera tokens ya consumidos. */
 void sem_cancel_wait(PCB *p) {
     if (p->sem_wait == SEM_WAIT_NONE) return;
 

@@ -78,23 +78,21 @@ void process_unblock(uint64_t pid);
 void process_nice(uint64_t pid, uint8_t new_priority);
 int process_waitpid(uint64_t pid);
 
-/* Desliga un hijo del llamante: nadie hara waitpid sobre el, asi que al terminar
-** el kernel libera su slot y su argv (debe ser un bloque de sys_malloc o NULL).
-** Devuelve 0 en exito; -1 si pid no es un hijo vivo o zombie del llamante, en cuyo
-** caso el argv sigue siendo responsabilidad del llamante. */
+/* Desliga un hijo y libera sus recursos al terminar.
+   Retorna -1 si no es hijo del proceso actual. */
 int process_detach(uint64_t pid);
+
 uint64_t process_ps(ProcessInfo *buf, uint64_t max);
 
-/* Extremos de pipe que el proceso abrio y debe cerrar el kernel si muere sin hacerlo.
-** process_track_pipe devuelve -1 si no hay lugar; process_untrack_pipe, si no lo tenia. */
+/* Registra o elimina extremos de pipe abiertos por el proceso.
+   Retornan -1 si falla la operación. */
 int process_track_pipe(PCB *p, int fd);
 int process_untrack_pipe(PCB *p, int fd);
 
-/* 1 si el proceso puede usar ese extremo: lo abrio o es su stdin/stdout. */
+/* Verifica si el proceso posee el extremo del pipe. */
 int process_holds_pipe(const PCB *p, int fd);
 
-/* Devuelve el PID del ultimo proceso foreground creado por la shell.
-** 0 si no hay ninguno vivo. Lo usa el driver de teclado para Ctrl+C. */
+/* Devuelve el PID foreground para Ctrl+C, o 0 si no existe. */
 uint64_t process_get_foreground(void);
 
 #endif

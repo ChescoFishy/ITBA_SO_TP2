@@ -6,7 +6,7 @@
 #define KERNEL 1
 #define USER 0
 
-/* Estructura para reportar el estado de la memoria. Ambos managers deben usar la misma estructura. */
+/* Estado de memoria compartido por ambos managers. */
 typedef struct {
     uint64_t total;         /* Bytes totales administrados. */ 
     uint64_t used;          /* Bytes actualmente asignados. */
@@ -14,26 +14,22 @@ typedef struct {
     uint64_t alloc_count;   /* Cantidad de bloques asignados actualmente. */
 } MemStatus;
 
-/* Inicializa el memory manager sobre el bloque [start, start+size) */
+/* Inicializa el administrador de memoria. */
 void mm_init(void *start, uint64_t size);
 
-/* Reserva 'size' bytes a nombre del proceso 'owner' (ver mm_free_owned).
-   Retorna NULL si no hay espacio. */
+/* Reserva memoria para un proceso. Retorna NULL si falla. */
 void *mm_malloc(uint64_t size, uint64_t owner);
 
-/* Igual que mm_malloc pero marca el bloque como interno del kernel: no se
-   contabiliza en alloc_count, de modo que mm_status refleje solo las
-   allocaciones hechas por el usuario (via sys_malloc). */
+/* Reserva memoria del kernel, sin contarla en alloc_count. */
 void *mm_malloc_kernel(uint64_t size);
 
-/* Libera el bloque apuntado por 'ptr'. Si ptr es NULL, no hace nada. */
+/* Libera un bloque de memoria. Ignora NULL. */
 void mm_free(void *ptr);
 
-/* Libera todos los bloques reservados a nombre de 'owner'. Se usa al terminar un
-   proceso: uno matado no llega a liberar su memoria por su cuenta. */
+/* Libera toda la memoria asignada a un proceso. */
 void mm_free_owned(uint64_t owner);
 
-/* Llena 'status' con el estado actual de la memoria. */ 
+/* Obtiene el estado actual de la memoria. */
 void mm_status(MemStatus *status);
 
 #endif

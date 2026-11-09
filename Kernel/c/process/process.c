@@ -53,19 +53,13 @@ static void str_copy(char *dst, const char *src, int max){
 // este layout desde la cima del stack hacia abajo.
 
 
-/* Trampolin de entrada: todo proceso arranca aca (es el RIP del frame
-** inicial). El stack inicial esta vacio — no hay direccion de retorno — asi
-** que si el entry retorna sin llamar sys_exit, se lo termina prolijamente via
-** la syscall de exit en lugar de que el ret salte a basura fuera del stack. */
+/* Ejecuta el proceso y llama a exit si retorna. */
 static void process_entry_wrapper(ProcessEntry entry, uint64_t argc, char **argv){
     entry((int)argc, argv);
     kernel_exit();
 }
 
-/*
-** Construye el frame inicial del stack.
-** Prepara el mecanismo para el context switching.
-*/
+/* Construye el stack inicial para el cambio de contexto. */
 static uint64_t* build_initial_stack(void *stack_top, ProcessEntry entry, int argc, char **argv){
     uint64_t* sp = (uint64_t *)stack_top;
 
@@ -173,9 +167,8 @@ int process_create_fd(const char *name, ProcessEntry entry, int argc, char **arg
     for(int i = 0; i < MAX_PIPE_FDS; i++){
         p->pipe_fds[i] = 0;
     }
-    /* Heredar refcount de pipes: el padre creó/abrió el pipe y le pasó el fd
-    ** al hijo. Bumpeamos para que el cierre del padre no libere el pipe antes
-    ** de que el hijo termine de usarlo. */
+    /* Incrementa las referencias de los pipes heredados para evitar
+    que el cierre del padre los libere antes que el hijo. */
     if(pipe_is_fd(fd_in))  pipe_inherit_fd(fd_in);
     if(pipe_is_fd(fd_out)) pipe_inherit_fd(fd_out);
     p->parent_pid = ((current_process != NULL) ? (current_process->pid) : 0);
@@ -193,9 +186,8 @@ int process_create_fd(const char *name, ProcessEntry entry, int argc, char **arg
         p->name[1] = '\0';
     }
 
-    /* Tracking del PID foreground actual para Ctrl+C. Solo cuentan procesos
-    ** creados desde otro proceso (la shell): los del kernel init no deben
-    ** quedar registrados como foreground (sino Ctrl+C mataria la shell). */
+    /* Registra el proceso foreground para Ctrl+C, excluyendo
+    los procesos creados durante la inicialización del kernel. */
     if(fg && current_process != NULL){
         fg_pid = p->pid;
     }
@@ -217,8 +209,7 @@ int process_create(const char *name, ProcessEntry entry, int argc, char **argv, 
     return process_create_fd(name, entry, argc, argv, fg, 0, 1);
 }
 
-/* Cierra cualquier fd que sea pipe en el PCB y los resetea a -1
-** para evitar dobles cierres si la rutina se invoca dos veces sobre el mismo PCB. */
+/* Cierra los pipes del proceso y evita dobles cierres. */
 static void close_process_pipes(PCB *p){
     for(int i = 0; i < 2; i++){
         if(pipe_is_fd(p->fd[i])){
@@ -266,10 +257,8 @@ int process_holds_pipe(const PCB *p, int fd){
     return 0;
 }
 
-/* parent->rsp apunta al slot R15; el slot RAX esta 14 qwords mas arriba.
-** Sign-extender retval a 64 bits para que int64_t -1 se preserve en userland.
-** Devuelve 1 si efectivamente desperto a un padre que esperaba (que ya consumio
-** el retval), 0 si no habia padre esperando. */
+/* Escribe el retval en RAX del padre y lo despierta si esperaba.
+   Retorna 1 si el padre recibio el resultado. */
 static int wake_waiting_parent(PCB *p){
     PCB *parent = process_get(p->parent_pid);
     if(parent != NULL && parent->state == PROCESS_BLOCKED && parent->waiting_for == p->pid){
@@ -281,10 +270,8 @@ static int wake_waiting_parent(PCB *p){
     return 0;
 }
 
-/* Limpieza comun a exit y kill: semaforo esperado, pipes, fg_pid, retval,
-** despertar padre. El semaforo va primero: cerrar los pipes postea sobre sus
-** semaforos y no debe entregarle un token a este proceso.
-** Devuelve 1 si un padre que esperaba ya consumio el retval. */
+/* Libera semaforos y pipes, actualiza el foreground
+   y notifica al padre. Cancela primero la espera del semaforo. */
 static int release_pcb_resources(PCB *p, int retval){
     sem_cancel_wait(p);
     close_process_pipes(p);
@@ -293,8 +280,7 @@ static int release_pcb_resources(PCB *p, int retval){
     return wake_waiting_parent(p);
 }
 
-/* Devuelve el slot a la tabla. El argv de un proceso desligado pasa a ser del
-** kernel (ver process_detach), asi que se libera aca. */
+/* Libera el slot y el argv de procesos desligados. */
 static void free_slot(PCB *p){
     if(p->detached && p->argv != NULL){
         mm_free(p->argv);
@@ -305,7 +291,7 @@ static void free_slot(PCB *p){
     p->pid = 0;
 }
 
-/* Un padre ZOMBIE ya termino: nunca va a hacer waitpid. */
+/* Un padre zombie no puede esperar a sus hijos. */
 static int parent_can_wait(const PCB *p){
     PCB *parent = process_get(p->parent_pid);
     return parent != NULL && parent->state != PROCESS_ZOMBIE;
@@ -321,12 +307,9 @@ static void reap_zombie_children(uint64_t parent_pid){
     }
 }
 
-/* Finaliza el slot de un proceso que ya no va a ejecutarse. Si el padre ya
-** consumio el retval (estaba en waitpid), el proceso esta desligado o quedo
-** huerfano (padre muerto), se libera el slot directamente: nadie hara (otro)
-** waitpid. Si el padre sigue vivo pero todavia no espero, se deja ZOMBIE para
-** un waitpid futuro (recien ahi se reclama el slot). Asi no se filtran slots
-** ni con comandos de foreground ni de background. */
+/* Libera los recursos del proceso.
+   Conserva el estado ZOMBIE si el padre todavía puede hacer waitpid,
+   en caso contrario, libera el slot. */
 static void finalize_pcb(PCB *p, int reaped){
     scheduler_remove(p);
     if(p->stack_base != NULL){
@@ -335,7 +318,6 @@ static void finalize_pcb(PCB *p, int reaped){
     }
     p->rsp = NULL;
 
-    /* Un proceso matado no llega a liberar lo que reservo con sys_malloc. */
     mm_free_owned(p->pid);
 
     reap_zombie_children(p->pid);
@@ -361,10 +343,8 @@ void process_kill(uint64_t pid){
         return;
     }
 
-    /* Matar a un proceso se lleva a sus descendientes: sino los hijos de un test
-    ** interrumpido con Ctrl+C seguirian corriendo sin que nadie pueda esperarlos.
-    ** Terminar normalmente (process_exit) no los afecta: mvar termina apenas crea
-    ** a sus lectores y escritores, que deben seguir corriendo. */
+    /* Termina recursivamente al proceso y sus descendientes.
+   A diferencia de exit, evita dejar hijos ejecutándose sin su padre. */
     for(int i = 0; i < MAX_PROCESSES; i++){
         PCB *child = &process_table[i];
         if(child->state != PROCESS_FREE && child->parent_pid == pid){
@@ -379,9 +359,7 @@ void process_kill(uint64_t pid){
         finalize_pcb(current_process, reaped);
         force_switch = 1;
     }else{
-        /* Matar otro proceso: liberar el slot de inmediato. Un proceso matado se
-        ** descarta (no se preserva su retval), asi que se fuerza FREE aunque el
-        ** padre no estuviera esperando: dejarlo ZOMBIE filtraria el slot. */
+        /* Libera directamente el slot del proceso terminado. */
         finalize_pcb(p, 1);
     }
 }
@@ -431,9 +409,7 @@ void process_nice(uint64_t pid, uint8_t new_priority){
     
     p->priority = new_priority;
 
-    /* Actualizar remaining_quanta incondicionalmente: si se sube la prioridad el
-       proceso recibe un quantum completo en el proximo tick; si se baja, se corta
-       el quantum actual para que no supere la nueva prioridad. */
+    /* Ajusta los quanta restantes a la nueva prioridad. */
     p->remaining_quanta = new_priority;
 }
 
@@ -485,8 +461,6 @@ int process_detach(uint64_t pid){
 
 /* Obtiene información sobre los procesos en ejecución. */
 uint64_t process_ps(ProcessInfo *buf, uint64_t max){
-    /* Validacion defensiva: en ring 0 sin paginacion un puntero invalido
-    ** corromperia memoria silenciosamente en lugar de fallar de forma controlada. */
     if(buf == NULL || max == 0){
         return 0;
     }
@@ -502,8 +476,7 @@ uint64_t process_ps(ProcessInfo *buf, uint64_t max){
             buf[count].state = (uint8_t)p->state;
             buf[count].foreground = p->foreground;
             buf[count].rsp = (uint64_t)p->rsp;
-            /* RBP guardado en el frame de pushState: con p->rsp apuntando al slot
-            ** R15, el orden es r15,r14,r13,r12,r11,r10,r9,r8,rsi,rdi,rbp,... -> [10]. */
+            /* RBP está en la posición 10 del frame guardado. */
             buf[count].rbp = (p->rsp != NULL) ? p->rsp[10] : 0;
             str_copy(buf[count].name, p->name, MAX_NAME_LEN);
             count++;

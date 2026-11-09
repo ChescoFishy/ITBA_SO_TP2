@@ -2,16 +2,16 @@
 #include "process/process.h"
 #include "time/time.h"
 
-// Leida desde interrupts.asm para decidir si hacer context switch voluntario
+/* Indica si se debe forzar un cambio de contexto. */
 volatile uint64_t force_switch = 0;
 
-/* Lista de procesos listos para ejecutarse. */
+/* Cola de procesos ejecutables. */
 static PCB* run_queue[MAX_PROCESSES];
 
 static int queue_size = 0;
-static int queue_idx  = 0;
+static int queue_idx = 0;
 
-/* Proceso idle: se elige solo cuando ningun otro proceso esta READY. */
+/* Se ejecuta cuando no hay otros procesos READY. */
 static PCB* idle_proc = NULL;
 
 /* Inicializa la cola de ejecución. */
@@ -26,13 +26,11 @@ void scheduler_set_idle(PCB* p){
     idle_proc = p;
 }
 
-/* Arranque: lanza el primer proceso sin retornar. */
+/* Inicia la ejecucion del primer proceso READY. */
 void scheduler_start(void){
-    /* Elegir el primer proceso READY en Round-Robin. */
     PCB* first = scheduler_next_ready();
 
     if(first == NULL){
-        /* Error. */
         return;
     }
 
@@ -47,7 +45,6 @@ void scheduler_start(void){
 void scheduler_add(PCB* p){
 
     if(queue_size < MAX_PROCESSES){
-        /* Agrega p al array statico. */
         run_queue[queue_size++] = p;
     }
 }
@@ -56,7 +53,6 @@ void scheduler_add(PCB* p){
 void scheduler_remove(PCB* p){
 
     for(int i = 0; i < queue_size; i++){
-        /* Recorro la cola estática. */
 
         if(p == run_queue[i]){
 
@@ -64,7 +60,6 @@ void scheduler_remove(PCB* p){
             run_queue[i] = run_queue[--queue_size]; 
 
             if((queue_idx >= queue_size) && (queue_size > 0)){
-                /* Caso en el que estaba procesando el último proceso. */
                 queue_idx = queue_size - 1;
             }
 
@@ -73,21 +68,16 @@ void scheduler_remove(PCB* p){
     }
 }
 
-/* 
-** Elegir el siguiente proceso READY usando round-robin. Solo elige procesos
-** en estado READY (excluye explicitamente al RUNNING actual; debe ser marcado
-** como READY antes de llamar). Si no hay nadie listo, devuelve NULL. 
-*/
+/* Busca el siguiente proceso READY mediante Round-Robin.
+   Prioriza procesos normales y utiliza idle como último recurso. */
 PCB* scheduler_next_ready(void){
     if(queue_size == 0){
-        /* No hay procesos listos. */
         return NULL;
     }
 
     PCB* idle_ready = NULL;   /* idle se reserva como ultima instancia */
 
     for(int i = 0; i < queue_size; i++){
-        /* Avanzo de forma circular. */
         queue_idx = (queue_idx + 1) % queue_size;
 
         PCB* c = run_queue[queue_idx];
@@ -98,7 +88,6 @@ PCB* scheduler_next_ready(void){
                 idle_ready = c;
                 continue;
             }
-            /* Retorna el primer proceso READY (no-idle) encontrado. */
             return c;
         }
     }
@@ -107,21 +96,16 @@ PCB* scheduler_next_ready(void){
     return idle_ready;
 }
 
-/* 
-** Llamada desde _irq00Handler (timer tick) 
-** Round-Robin con prioridades: el proceso actual sigue corriendo mientras le
-** queden quantum (priority quantum consecutivas por turno). Cuando se le agotan,
-** pasa a READY y se elige el siguiente de la cola con round-robin.
-*/
+/* Ejecutado en cada tick del timer.
+   Aplica Round-Robin con prioridades: cada proceso ejecuta
+   tantos quanta consecutivos como indique su prioridad. */
 uint64_t* scheduler_tick(uint64_t* current_rsp){
 
-    /* Actualizar contador de ticks. */
     timer_handler();
 
     PCB* cur = process_current();
 
     if(cur != NULL){
-        /* Si hay un proceso corriendo... */
         cur->rsp = current_rsp;
 
         if(cur->state == PROCESS_RUNNING){
@@ -130,7 +114,6 @@ uint64_t* scheduler_tick(uint64_t* current_rsp){
             }
 
             if(cur->remaining_quanta > 0){
-                /* Todavia tiene quanta -> sigue corriendo. */
                 return current_rsp;
             }
 
@@ -141,21 +124,16 @@ uint64_t* scheduler_tick(uint64_t* current_rsp){
     }
 
     /* Elegir el siguiente proceso READY. */
-    /* Se llega aca cuando el proceso actual no tenga mas quantum. */
     PCB* next = scheduler_next_ready();
 
     if(next == NULL){
-        /* 
-        ** Nadie listo: si el actual aun tiene un stack (no esta ZOMBIE/FREE),
-        ** seguimos con el; sino quedamos con el RSP actual y la CPU hace hlt
-        ** hasta el proximo IRQ. 
-        */
+        /* Si no hay otro proceso listo, continúa con el actual si puede.
+        De lo contrario, conserva el contexto actual. */
         if((cur != NULL) && (cur->state == PROCESS_READY || cur->state == PROCESS_RUNNING)){
             cur->state = PROCESS_RUNNING;
             return current_rsp;
         }
 
-        /* Entra en hlt. */
         return current_rsp;
     }
 
@@ -165,11 +143,8 @@ uint64_t* scheduler_tick(uint64_t* current_rsp){
     return next->rsp;
 }
 
-/* 
-** Implementación de yield (pausa). Llamada desde _irq128Handler cuando
-** force_switch = 1 (sys_yield, sys_exit, sys_block sobre el proceso actual,
-** sys_read sin datos disponibles, etc.). 
-*/
+/* Realiza un cambio de contexto voluntario.
+   Se utiliza en yield, exit, block y otras operaciones bloqueantes. */
 uint64_t *scheduler_yield_impl(uint64_t *current_rsp){
     PCB* cur = process_current();
 
@@ -187,14 +162,13 @@ uint64_t *scheduler_yield_impl(uint64_t *current_rsp){
 
     PCB* next = scheduler_next_ready();
     if(next == NULL){
-        /* Nadie listo distinto del actual. Si cur sigue listo, retomarlo. */
+        /* Retoma el proceso actual si sigue READY. */
         if(cur != NULL && cur->state == PROCESS_READY){
             cur->state = PROCESS_RUNNING;
             return current_rsp;
         }
-        /* Caso patologico: nadie listo y cur esta BLOCKED/ZOMBIE.
-           Devolvemos el rsp actual; la CPU hara hlt hasta el proximo IRQ que
-           desbloquee a alguien (idle deberia evitar este caso siempre). */
+        /* Sin procesos listos, conserva el contexto actual.
+        Idle debería evitar esta situación. */
         return current_rsp;
     }
 
