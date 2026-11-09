@@ -10,6 +10,17 @@ typedef struct P_rq {
     enum State state;
 } p_rq;
 
+/* Mata los procesos de p_rqs[0..n) que sigan vivos*/
+static void kill_alive(p_rq *p_rqs, uint64_t n) {
+    for (uint64_t i = 0; i < n; i++) {
+        if (p_rqs[i].state != KILLED) {
+            my_kill((uint64_t)p_rqs[i].pid);
+            my_wait(p_rqs[i].pid);
+            p_rqs[i].state = KILLED;
+        }
+    }
+}
+
 static int64_t test_processes(uint64_t argc, char *argv[]) {
     uint8_t  rq;
     uint8_t  alive = 0;
@@ -33,6 +44,7 @@ static int64_t test_processes(uint64_t argc, char *argv[]) {
 
             if (p_rqs[rq].pid == -1) {
                 printf("test_processes: ERROR creando proceso\n");
+                kill_alive(p_rqs, rq);
                 return -1;
             } else {
                 p_rqs[rq].state = RUNNING;
@@ -51,6 +63,7 @@ static int64_t test_processes(uint64_t argc, char *argv[]) {
                         if (p_rqs[rq].state == RUNNING || p_rqs[rq].state == BLOCKED) {
                             if (my_kill((uint64_t)p_rqs[rq].pid) == -1) {
                                 printf("test_processes: ERROR matando proceso\n");
+                                kill_alive(p_rqs, max_processes);
                                 return -1;
                             }
                             p_rqs[rq].state = KILLED;
@@ -63,6 +76,7 @@ static int64_t test_processes(uint64_t argc, char *argv[]) {
                         if (p_rqs[rq].state == RUNNING) {
                             if (my_block((uint64_t)p_rqs[rq].pid) == -1) {
                                 printf("test_processes: ERROR bloqueando proceso\n");
+                                kill_alive(p_rqs, max_processes);
                                 return -1;
                             }
                             p_rqs[rq].state = BLOCKED;
@@ -76,6 +90,7 @@ static int64_t test_processes(uint64_t argc, char *argv[]) {
                 if (p_rqs[rq].state == BLOCKED && GetUniform(100) % 2) {
                     if (my_unblock((uint64_t)p_rqs[rq].pid) == -1) {
                         printf("test_processes: ERROR desbloqueando proceso\n");
+                        kill_alive(p_rqs, max_processes);
                         return -1;
                     }
                     p_rqs[rq].state = RUNNING;
@@ -105,4 +120,3 @@ void test_proc_main(int argc, char **argv) {
     test_processes(1, args);
     sys_exit(0);
 }
-

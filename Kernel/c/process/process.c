@@ -406,7 +406,7 @@ void process_block(uint64_t pid){
 void process_unblock(uint64_t pid){
     PCB* p = process_get(pid);
 
-    if(p == NULL || p->state != PROCESS_BLOCKED){
+    if(p == NULL || p->state != PROCESS_BLOCKED || p->waiting_for != 0){
         return;
     }
 

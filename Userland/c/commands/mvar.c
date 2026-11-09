@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "lib/userlib.h"
 #include "lib/io.h"
+#include "lib/strings.h"
 #include "tests/test_util.h"
 #include "commands/commands.h"
 
@@ -114,6 +115,18 @@ static void reader_main(int argc, char **argv) {
     }
 }
 
+/* Mata a los escritores y lectores de una corrida anterior */
+static void kill_previous_run(void) {
+    static ProcessInfo procs[MAX_PROCESSES];   /* static: el stack es chico */
+    uint64_t count = sys_ps(procs, MAX_PROCESSES);
+
+    for (uint64_t i = 0; i < count; i++) {
+        if (strcmp(procs[i].name, "mvar_writer") == 0 ||
+            strcmp(procs[i].name, "mvar_reader") == 0)
+            sys_kill(procs[i].pid);
+    }
+}
+
 /* mvar <n_escritores> <n_lectores> */
 void mvar_main(int argc, char **argv) {
     if (argc < 2 || argv == 0 || argv[0] == 0 || argv[1] == 0) {
@@ -132,6 +145,8 @@ void mvar_main(int argc, char **argv) {
         printf("mvar: lectores debe estar entre 1 y %d\n", MAX_READERS);
         sys_exit(-1);
     }
+
+    kill_previous_run();
 
     /* Purgar semaforos de corridas anteriores: sem_open sobre un nombre
     ** existente conserva el valor viejo y romperia el invariante inicial. */
