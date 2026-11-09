@@ -143,7 +143,7 @@ los de foreground antes de mostrar de nuevo el prompt.
 | `cat` | — | Copia stdin a stdout hasta EOF. Funciona standalone (teclado + `Ctrl+D`) y con pipes. |
 | `wc` | — | Cuenta las líneas recibidas por stdin. |
 | `filter` | — | Reimprime stdin filtrando las vocales. |
-| `mvar` | `<escritores> <lectores>` | Demo lectores/escritores con una MVar sincronizada por dos semáforos nombrados. Crea los hijos y termina de inmediato. |
+| `mvar` | `<escritores> <lectores>` | Demo lectores/escritores con una MVar sincronizada por dos semáforos nombrados. Crea los hijos y termina de inmediato. Antes mata a los hijos de una corrida anterior que sigan vivos. |
 | `echo` | `[args...]` | Imprime sus argumentos. |
 | `astdin` | — | Emite la letra `a` por stdout (útil con pipes). |
 | `red` | — | Imprime stdin en rojo. |
@@ -224,7 +224,9 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
   modo que una imagen contiene un único administrador.
 - **Scheduler:** Round Robin con prioridades 1 a 5. La prioridad determina cuántos
   quanta consecutivos recibe un proceso. Si no hay procesos listos corre `idle`.
-- **Procesos:** tabla fija de PCBs y stacks de 4 KB. Un proceso terminado queda ZOMBIE
+- **Procesos:** tabla fija de PCBs y stacks de 8 KB (el kernel corre sobre el mismo stack
+  que el proceso durante las syscalls; con Buddy cada stack ocupa 16 KB reales por el
+  redondeo a potencia de 2). Un proceso terminado queda ZOMBIE
   solo si su padre todavía puede esperarlo. La shell desliga a los de background con
   `sys_detach`, y el kernel reclama su slot y su `argv` al terminar.
 - **Semáforos con nombre:** procesos no relacionados los comparten acordando el nombre.
@@ -263,6 +265,10 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 - La prioridad de un proceso solo cambia su parte de CPU. Con los valores por defecto,
   subir un escritor de `mvar` a 5 le da 5 ticks contra 3 del otro.
 - Sin paginación: todos los procesos comparten el mismo espacio de direcciones.
+- `block` no despierta a un proceso que está esperando en `waitpid`: solo lo despierta
+  la terminación de su hijo.
+- `test_mm <max_memoria>` debería usar un valor menor al heap libre (8 MB). Con valores
+  mayores puede quedar reintentando reservas sin imprimir nada.
 - El árbol conserva **comandos heredados de x64BareBones** (arquitectura, benchmarks
   `bm*`, manejo de excepciones) que **no forman parte de la entrega de TP2**: no están
   registrados en la tabla `commands[]` de la shell y se mantienen solo como referencia.
@@ -295,8 +301,38 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 - **Valores viejos en semáforos con nombre:** `sem_open` sobre un nombre existente
   conserva su valor, lo que rompía `mvar` y `test_sync` entre corridas. Estos comandos
   purgan sus semáforos antes de abrirlos.
+- **`block` sobre un padre en `waitpid`:** `process_unblock` pasaba a READY a cualquier
+  proceso bloqueado, y `waitpid` retornaba con basura mientras el hijo seguía vivo. Ahora
+  se ignora a los procesos con `waiting_for != 0`.
+- **`mvar` corrido dos veces seguidas:** los escritores y lectores viejos se enganchaban a
+  los semáforos de la corrida nueva (mismos nombres). Ahora `mvar` mata a los anteriores
+  antes de purgar los semáforos.
+- **`test_proc` dejaba procesos huérfanos al fallar:** `process_exit` no mata a los hijos,
+  así que los `endless_loop` ya creados seguían corriendo. Ahora el test los mata antes de
+  salir, y los wrappers `my_kill`, `my_block` y `my_unblock` devuelven el resultado real.
+- **Stacks de 4 KB al límite:** `test_mm` usa unos 2 KB de stack y el kernel corre sobre el
+  mismo, sin guard page. Se subió a 8 KB.
 - **`help` perdía líneas con la fuente agrandada:** la consola no tiene scrollback. Se
   agregó un paginador que cuenta filas físicas.
+
+---
+
+## Análisis estático (PVS-Studio)
+
+Se analizó el proyecto dentro de la imagen de la cátedra:
+
+```bash
+make clean
+pvs-studio-analyzer trace -- make all
+pvs-studio-analyzer analyze -o PVS-Studio.log
+plog-converter -a GA:1,2 -t tasklist -o report.tasks PVS-Studio.log
+```
+
+**Resultado:** COMPLETAR después de correrlo (sin advertencias, o la lista de abajo).
+
+Falsos positivos justificados:
+
+- COMPLETAR: `archivo.c:línea` (código V###): por qué no es un problema real.
 
 ---
 

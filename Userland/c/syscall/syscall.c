@@ -49,18 +49,15 @@ int64_t my_nice(uint64_t pid, uint64_t newPrio) {
 }
 
 int64_t my_kill(uint64_t pid) {
-    sys_kill(pid);
-    return 0;
+    return sys_kill(pid);
 }
 
 int64_t my_block(uint64_t pid) {
-    sys_block(pid);
-    return 0;
+    return sys_block(pid);
 }
 
 int64_t my_unblock(uint64_t pid) {
-    sys_unblock(pid);
-    return 0;
+    return sys_unblock(pid);
 }
 
 int64_t my_yield(void) {

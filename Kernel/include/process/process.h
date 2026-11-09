@@ -5,7 +5,8 @@
 #include <stddef.h>
 
 #define MAX_PROCESSES 64
-#define STACK_SIZE (4 * 1024)    // 4 KB por proceso
+//#define STACK_SIZE (4 * 1024)    // 4 KB por proceso
+#define STACK_SIZE (8 * 1024)    // 8 KB por proceso (el kernel corre sobre este mismo stack)
 #define MAX_NAME_LEN 32
 #define MIN_PRIORITY 1
 #define MAX_PRIORITY 5
