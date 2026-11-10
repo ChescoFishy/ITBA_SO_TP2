@@ -20,16 +20,14 @@ int main(void){
     return 0;
 }
 
-/* Lee una línea desde teclado. El cursor parpadeante lo dibuja el kernel
-** (sys_set_cursor): cualquier escritura a consola — de la shell o de un
-** proceso en background — lo desplaza por delante, como en una terminal. */
+/* Lee una línea del teclado. El cursor lo dibuja el kernel. */
 void shellReadLine(char * buffer, uint64_t max){
     char c;
     uint32_t idx = 0;
 
     while(1){
         if(sys_read(STDIN, &c, 1) != 1){
-            continue; // READ_RETRY: el proceso durmió esperando una tecla
+            continue;
         }
 
         if(c == '\n'){
@@ -39,18 +37,16 @@ void shellReadLine(char * buffer, uint64_t max){
         if(c == '\b'){
             if(idx > 0){
                 idx--;
-                shellPutchar('\b', STDOUT); // borrar último carácter
+                shellPutchar('\b', STDOUT);
             }
         } else if(c == '+'){
-            // Aumentar fuente y redibujar contenido
             sys_increase_fontsize();
             redrawFont();
         } else if(c == '-'){
-            // Disminuir fuente y redibujar contenido
             sys_decrease_fontsize();
             redrawFont();
         } else {
-            if(idx + 1 < max){ // dejar lugar para terminador NUL
+            if(idx + 1 < max){ // lugar para el '\0'
                 buffer[idx++] = c;
                 shellPutchar(c, STDOUT);
             }
@@ -60,7 +56,6 @@ void shellReadLine(char * buffer, uint64_t max){
     buffer[idx] = 0;
 }
 
-// Imprime una cadena en STDOUT
 void shellPrintString(char *str){
     if(str == 0){
         return;
@@ -70,14 +65,12 @@ void shellPrintString(char *str){
     }
 }
 
-// Escribe un caracter en el descriptor indicado
+// Guarda el caracter para redibujar y lo escribe en fd.
 void shellPutchar(char c, uint64_t fd){
-    // Registrar en redraw buffer antes de imprimir
     redraw_append_char(c, fd);
-    sys_write(fd, &c, 1); // escribo el caracter
+    sys_write(fd, &c, 1);
 }
 
-// Salto de línea
 void shellNewline(){
     shellPutchar('\n', STDOUT);
 }

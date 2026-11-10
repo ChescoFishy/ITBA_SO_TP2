@@ -1,5 +1,4 @@
-// Parser de la shell: tabla de comandos, tokenizacion, soporte de '&' (background)
-// y '|' (pipe), y spawn de procesos (simples y conectados por pipe).
+// Parser de la shell: tabla de comandos, '&', '|' y creacion de procesos.
 #include <stdint.h>
 #include <stddef.h>
 #include "lib/userlib.h"
@@ -13,7 +12,7 @@
 #include "tests/test_pipe.h"
 
 Command commands[] = {
-    /* Builtins: corren sincronicamente en la shell. No admiten & ni |. */
+    /* Builtins: corren en la shell, sin & ni |. */
     {"help",      help,                 0,             "muestra esta ayuda"},
     {"clear",     clear,                0,             "limpia la pantalla"},
 
@@ -34,7 +33,7 @@ Command commands[] = {
     {"kill",      kill_cmd,             0,             "<pid>      mata un proceso"},
     {"nice",      nice_cmd,             0,             "<pid> <p>  cambia prioridad (1-5)"},
     {"block",     block_cmd,            0,             "<pid>      alterna BLOCKED/READY"},
-    /* Procesos: la shell los lanza con sys_create_process. Admiten & y |. */
+    /* Procesos: admiten & y |. */
     {"test_mm",   0,        test_mm_main,    "<max>     test del memory manager"},
     {"test_proc", 0,        test_proc_main,  "<max>     test de procesos"},
     {"test_prio", 0,        test_prio_main,  "<target>  test de prioridades"},
@@ -54,19 +53,16 @@ Command commands[] = {
     {0, 0, 0, 0},
 };
 
-/* Argumentos del comando actual (compat). cmd_args() devuelve la string
-** completa post-primer espacio o NULL. Solo lo setean los builtins via shell. */
+/* Argumentos de un builtin: la linea despues del nombre, o NULL. */
 static const char *g_cmd_args = 0;
 
 const char *cmd_args(void){
     return g_cmd_args;
 }
 
-/* ── Parser de la shell ───────────────────────────────────────────────────── */
-
 #define MAX_ARGS 16
 
-/* Tokeniza `line` in-place: inserta NULs y llena argv[]. Devuelve argc. */
+/* Separa line en palabras sobre el mismo buffer. Devuelve argc. */
 static int tokenize(char *line, char *argv[], int max){
     int argc = 0;
     char *p = line;
@@ -88,10 +84,8 @@ static Command *find_cmd(const char *name){
     return 0;
 }
 
-/* Duplica argv (apuntadores + strings) en un solo bloque heap. Usado para
-** procesos background, ya que el buff de la shell se reescribe en el
-** proximo readline. Layout: [char*[argc]] | [strings concatenadas].
-** Retorna NULL si no hay memoria. */
+/* Copia argv al heap en un solo bloque, porque la shell reusa su buffer.
+** Devuelve NULL si no hay memoria. */
 static char **dup_argv(int argc, char **argv){
     if(argc <= 0) return 0;
     uint64_t strs = 0;
@@ -109,17 +103,15 @@ static char **dup_argv(int argc, char **argv){
     return out;
 }
 
-/* La shell no va a esperar a un proceso de background: lo desliga para que el
-** kernel reclame su slot y su argv al terminar. Si no se pudo (no se creo o ya
-** lo mataron), el argv sigue siendo de la shell. */
+/* Desliga un proceso de background para que el kernel lo libere al terminar.
+** Si falla, la shell libera el argv. */
 static void detach_background(int64_t pid, char **argv){
     if(pid <= 0 || sys_detach((uint64_t)pid) < 0){
         if(argv) sys_free(argv);
     }
 }
 
-/* Spawnea un proceso entry con los args dados. Para fg, hace waitpid y libera
-** el bloque argv heap. Para bg, lo desliga y reporta el PID. */
+/* Crea un proceso. En foreground lo espera; en background imprime su PID. */
 static void spawn_simple(Command *c, int argc, char **argv, uint8_t fg){
     char **owned_argv = dup_argv(argc, argv);
     if(argc > 0 && owned_argv == 0){
@@ -146,7 +138,7 @@ static void spawn_simple(Command *c, int argc, char **argv, uint8_t fg){
     }
 }
 
-/* Spawnea dos procesos conectados por un pipe. Foreground espera ambos. */
+/* Crea dos procesos conectados por un pipe. */
 static void spawn_pipe(Command *c1, int argc1, char **argv1,
                        Command *c2, int argc2, char **argv2, uint8_t fg){
     int fds[2];
@@ -189,8 +181,7 @@ static void spawn_pipe(Command *c1, int argc1, char **argv1,
 
     if(fg){
         if(pid2 > 0) sys_waitpid((uint64_t)pid2);
-        /* Si pid2 murio (e.g. Ctrl+C) y pid1 esta en un loop sin IO,
-        ** no detectaria broken pipe; lo matamos explicitamente. */
+        /* Si pid1 no escribe, nunca ve que el lector murio: se lo mata. */
         if(pid1 > 0){
             sys_kill((uint64_t)pid1);
             sys_waitpid((uint64_t)pid1);
@@ -211,17 +202,17 @@ static void spawn_pipe(Command *c1, int argc1, char **argv1,
     }
 }
 
-/* Parsea una linea de shell con soporte para '&' (background) y '|' (pipe). */
+/* Procesa una linea de la shell. */
 void processLine(char * buff, uint32_t * history_len){
     (void)history_len;
     size_t L = strlen(buff);
     if(L == 0) return;
 
-    /* Trim trailing spaces. */
+    /* Saca los espacios del final. */
     while(L > 0 && buff[L-1] == ' ') buff[--L] = '\0';
     if(L == 0) return;
 
-    /* Trailing '&' → background. */
+    /* '&' al final: background. */
     uint8_t fg = 1;
     if(buff[L-1] == '&'){
         fg = 0;
@@ -230,7 +221,7 @@ void processLine(char * buff, uint32_t * history_len){
         if(L == 0){ shellPrintString("error: '&' sin comando\n"); return; }
     }
 
-    /* Buscar '|' (un solo pipe soportado). */
+    /* Un solo '|' por linea. */
     char *pipe_pos = 0;
     for(size_t i = 0; buff[i]; i++){
         if(buff[i] == '|'){ pipe_pos = &buff[i]; break; }
@@ -263,7 +254,6 @@ void processLine(char * buff, uint32_t * history_len){
         return;
     }
 
-    /* Comando simple. */
     char *argv[MAX_ARGS];
     int argc = tokenize(buff, argv, MAX_ARGS);
     if(argc == 0) return;
@@ -279,12 +269,9 @@ void processLine(char * buff, uint32_t * history_len){
             shellPrintString("error: los builtins no admiten '&'\n");
             return;
         }
-        /* Compat: exponer la string completa post-primer-espacio via cmd_args(). */
         g_cmd_args = 0;
         if(argc > 1){
-            /* argv[1] apunta dentro del buff original; el byte previo fue
-            ** sobrescrito con '\0' por tokenize. Restaurarlo a ' ' para
-            ** reconstruir la string original. */
+            /* Vuelve a unir los argumentos: tokenize cambio los espacios por '\0'. */
             for(int k = 1; k < argc; k++){
                 if(k > 1) *(argv[k] - 1) = ' ';
             }
@@ -295,6 +282,5 @@ void processLine(char * buff, uint32_t * history_len){
         return;
     }
 
-    /* Proceso. */
     spawn_simple(c, argc - 1, argv + 1, fg);
 }
