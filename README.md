@@ -325,25 +325,6 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 
 ---
 
-## Análisis estático (PVS-Studio)
-
-Se analizó el proyecto dentro de la imagen de la cátedra:
-
-```bash
-make clean
-pvs-studio-analyzer trace -- make all
-pvs-studio-analyzer analyze -o PVS-Studio.log
-plog-converter -a GA:1,2 -t tasklist -o report.tasks PVS-Studio.log
-```
-
-**Resultado:** COMPLETAR después de correrlo (sin advertencias, o la lista de abajo).
-
-Falsos positivos justificados:
-
-- COMPLETAR: `archivo.c:línea` (código V###): por qué no es un problema real.
-
----
-
 ## Citas de fragmentos de código
 
 - **x64BareBones:** base del proyecto, proveniente del TP de Arquitectura de
