@@ -325,6 +325,23 @@ MM=BUDDY ./compile.sh && ./run.sh   # → dentro del OS: test_mm 1000000
 
 ---
 
+## Análisis estático (PVS-Studio)
+
+Se intentó realizar el análisis estático del proyecto utilizando PVS-Studio dentro de la imagen Docker proporcionada por la cátedra.
+
+Para ello, se ejecutaron los siguientes comandos:
+
+```bash
+make clean
+pvs-studio-analyzer trace -- make all
+pvs-studio-analyzer analyze -o PVS-Studio.log
+plog-converter -a GA:1,2 -t tasklist -o report.tasks PVS-Studio.log
+```
+
+**Resultado:** Se hicieron varios intentos y se revisó la configuración de la herramienta, pero no logramos obtener correctamente los resultados del análisis con PVS-Studio. Por este motivo, no pudimos completar esta verificación.
+
+---
+
 ## Citas de fragmentos de código
 
 - **x64BareBones:** base del proyecto, proveniente del TP de Arquitectura de
