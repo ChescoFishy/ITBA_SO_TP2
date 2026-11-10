@@ -2,6 +2,14 @@
 
 Kernel bare-metal x86-64 que corre directamente sobre QEMU o hardware real, sin sistema operativo subyacente. Implementa memoria, procesos, scheduling y syscalls desde cero.
 
+## Integrantes del Grupo
+
+| Nombre                    | Legajo    |         Mail                     |
+|---------------------------|-----------|----------------------------------|
+| Julia Petti Pagadizabal   | 62453     | jpettipagadizabal@itba.edu.ar    |
+| Mateo Reino               | 61307     | mreino@itba.edu.ar               |
+| Francesco Vega Scarabino  | 65199     | fvegascarabino@itba.edu.ar       |
+
 ## Requisitos
 
 - Docker (único requisito en el host)
